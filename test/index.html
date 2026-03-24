@@ -1,0 +1,253 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>JotterJS — Test</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/icon?family=Material+Icons" rel="stylesheet">
+  <link rel="stylesheet" href="../src/jotter.css" />
+  <style>
+    *,
+    *::before,
+    *::after {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+
+    body {
+      background: #f8f7f4;
+      font-family: 'DM Mono', monospace;
+      font-size: 13px;
+      color: #1e1c18;
+      padding: 40px;
+    }
+
+    .wrap {
+      max-width: 860px;
+      margin: 0 auto;
+      display: flex;
+      flex-direction: column;
+      gap: 48px;
+    }
+
+    h1 {
+      font-size: 18px;
+      font-weight: 500;
+      letter-spacing: -0.01em;
+    }
+
+    h2 {
+      font-size: 11px;
+      font-weight: 500;
+      text-transform: uppercase;
+      letter-spacing: 0.1em;
+      color: #9a9488;
+      margin-bottom: 12px;
+    }
+
+    .controls {
+      display: flex;
+      gap: 10px;
+      align-items: flex-start;
+      flex-wrap: wrap;
+    }
+
+    textarea {
+      flex: 1;
+      min-width: 200px;
+      height: 80px;
+      background: #fff;
+      border: 1px solid #d8d4cc;
+      border-radius: 4px;
+      padding: 10px 12px;
+      font-family: 'DM Mono', monospace;
+      font-size: 12px;
+      color: #1e1c18;
+      resize: vertical;
+      outline: none;
+    }
+
+    textarea:focus {
+      border-color: #7a6a4a;
+    }
+
+    button {
+      padding: 8px 16px;
+      border: 1px solid #d8d4cc;
+      border-radius: 4px;
+      background: #fff;
+      font-family: 'DM Mono', monospace;
+      font-size: 11px;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+      color: #1e1c18;
+      cursor: pointer;
+      white-space: nowrap;
+      transition: border-color 120ms, color 120ms, background 120ms;
+    }
+
+    button:hover {
+      border-color: #7a6a4a;
+      color: #7a6a4a;
+      background: rgba(122, 106, 74, 0.05);
+    }
+
+    .output {
+      background: #fff;
+      border: 1px solid #d8d4cc;
+      border-radius: 4px;
+      padding: 12px;
+      font-size: 12px;
+      color: #3a6030;
+      min-height: 40px;
+      white-space: pre-wrap;
+      word-break: break-all;
+      flex: 1;
+    }
+
+    label {
+      font-size: 10px;
+      text-transform: uppercase;
+      letter-spacing: 0.1em;
+      color: #9a9488;
+    }
+
+    .field {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+
+    .code {
+      background: #eceae5;
+      border: 1px solid #d8d4cc;
+      border-radius: 4px;
+      padding: 12px 14px;
+      font-size: 11px;
+      color: #3a6030;
+      white-space: pre;
+      overflow-x: auto;
+    }
+  </style>
+</head>
+
+<body>
+  <div class="wrap">
+
+    <h1>JotterJS — test page</h1>
+
+    <!-- ── 1. Default toolbar ─────────────────────────────────────── -->
+    <section>
+      <h2>Default toolbar</h2>
+      <div id="editor-default"></div>
+      <div class="controls" style="margin-top:12px">
+        <div class="field" style="flex:1">
+          <label>Set HTML</label>
+          <textarea id="set-default" placeholder="Paste HTML…"></textarea>
+        </div>
+        <button id="btn-set-default" style="margin-top:22px">Set</button>
+        <div class="field" style="flex:1">
+          <label>Get HTML</label>
+          <div class="controls">
+            <div class="output" id="out-default">—</div>
+            <button id="btn-get-default">Get</button>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ── 2. Preset: writing ─────────────────────────────────────── -->
+    <section>
+      <h2>Preset — writing</h2>
+      <div class="code">new JotterJS('#el', { toolbar: JotterJS.presets.writing })</div>
+      <div id="editor-writing" style="margin-top:12px"></div>
+    </section>
+
+    <!-- ── 3. Preset: minimal ─────────────────────────────────────── -->
+    <section>
+      <h2>Preset — minimal</h2>
+      <div class="code">new JotterJS('#el', { toolbar: JotterJS.presets.minimal })</div>
+      <div id="editor-minimal" style="margin-top:12px"></div>
+    </section>
+
+    <!-- ── 4. Custom toolbar ──────────────────────────────────────── -->
+    <section>
+      <h2>Custom toolbar + custom button with callback</h2>
+      <div class="code">new JotterJS('#el', {
+        toolbar: [
+        actions.bold, actions.italic, actions.sep,
+        {
+        icon: 'star',
+        title: 'Insert signature',
+        onClick: (editor) => editor.setHTML(editor.getHTML() + '&lt;p&gt;&lt;em&gt;— Sent with
+        JotterJS&lt;/em&gt;&lt;/p&gt;'),
+        },
+        {
+        label: 'Clear',
+        title: 'Clear content',
+        onClick: (editor) => editor.clear(),
+        },
+        ]
+        })</div>
+      <div id="editor-custom" style="margin-top:12px"></div>
+    </section>
+
+  </div>
+
+  <script type="module">
+    import JotterJS from '../src/jotter.js';
+
+    // 1 — default
+    const ed1 = new JotterJS('#editor-default', { height: '280px' });
+    document.getElementById('btn-set-default').addEventListener('click', () => {
+      const v = document.getElementById('set-default').value;
+      if (v.trim()) ed1.setHTML(v);
+    });
+    document.getElementById('btn-get-default').addEventListener('click', () => {
+      document.getElementById('out-default').textContent = ed1.getHTML();
+    });
+
+    // 2 — writing preset
+    new JotterJS('#editor-writing', {
+      height: '200px',
+      toolbar: JotterJS.presets.writing,
+    });
+
+    // 3 — minimal preset
+    new JotterJS('#editor-minimal', {
+      height: '160px',
+      toolbar: JotterJS.presets.minimal,
+    });
+
+    // 4 — custom buttons with onClick callbacks
+    const { actions } = JotterJS;
+    new JotterJS('#editor-custom', {
+      height: '160px',
+      toolbar: [
+        actions.bold, actions.italic, actions.sep, actions.lorem, actions.image, actions.link,
+        {
+          icon: 'star',
+          title: 'Insert signature',
+          onClick: (editor) => {
+            // editor.setHTML(
+            //editor.getHTML() + '<p><em>— Sent with JotterJS</em></p>'
+            editor.insertHTML("<h2>Hello World!</h2>")
+
+          },
+        },
+        {
+          label: 'Clear',
+          title: 'Clear content',
+          onClick: (editor) => editor.clear(),
+        },
+      ],
+    });
+  </script>
+</body>
+
+</html>

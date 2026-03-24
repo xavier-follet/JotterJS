@@ -1,0 +1,574 @@
+/* ─── HTMLed Editor Styles ─────────────────────────────────────────────────── */
+@import url('https://fonts.googleapis.com/icon?family=Material+Icons');
+
+:root {
+  --jotter-bg: #ffffff;
+  --jotter-surface: #f4f3f0;
+  --jotter-surface2: #eceae5;
+  --jotter-border: #d8d4cc;
+  --jotter-border-focus: #7a6a4a;
+  --jotter-text: #1e1c18;
+  --jotter-text-muted: #9a9488;
+  --jotter-accent: #7a6a4a;
+  --jotter-btn-hover: rgba(122, 106, 74, 0.07);
+  --jotter-btn-active-bg: rgba(122, 106, 74, 0.14);
+  --jotter-radius: 4px;
+  --jotter-font-ui: 'DM Mono', 'Fira Mono', 'Consolas', monospace;
+  --jotter-font-editor: Georgia, 'Times New Roman', serif;
+  --jotter-status-h: 32px;
+  --jotter-transition: 140ms ease;
+}
+
+/* ─── Host / Root ───────────────────────────────────────────────────────────── */
+
+.jotter-host { display: block; }
+
+.htmled {
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--jotter-border);
+  border-radius: var(--jotter-radius);
+  background: var(--jotter-bg);
+  color: var(--jotter-text);
+  font-family: var(--jotter-font-ui);
+  overflow: hidden;
+  transition: border-color var(--jotter-transition), box-shadow var(--jotter-transition);
+}
+
+.jotter--focused {
+  border-color: var(--jotter-border-focus);
+  box-shadow: 0 0 0 3px rgba(122, 106, 74, 0.10);
+}
+
+.jotter--disabled { opacity: 0.55; pointer-events: none; }
+
+/* ─── Toolbar ───────────────────────────────────────────────────────────────── */
+
+.jotter-toolbar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 2px;
+  padding: 6px 8px;
+  background: var(--jotter-surface);
+  border-bottom: 1px solid var(--jotter-border);
+}
+
+/* Selects (block format, font family, font size) */
+.jotter-select {
+  appearance: none;
+  -webkit-appearance: none;
+  background: transparent;
+  border: 1px solid var(--jotter-border);
+  border-radius: var(--jotter-radius);
+  color: var(--jotter-text);
+  font-family: var(--jotter-font-ui);
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  padding: 4px 8px;
+  height: 28px;
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: border-color var(--jotter-transition), background var(--jotter-transition);
+}
+
+.jotter-select           { min-width: 108px; text-transform: uppercase; }
+.jotter-select--font     { min-width: 130px; text-transform: none; }
+.jotter-select--size     { min-width: 68px;  text-transform: none; }
+.jotter-select--theme    { min-width: 90px;  text-transform: none; }
+
+.jotter-select:hover  { border-color: var(--jotter-accent); background: var(--jotter-btn-hover); }
+.jotter-select:focus  { outline: none; border-color: var(--jotter-accent); }
+.jotter-select option { background: var(--jotter-surface2); color: var(--jotter-text); }
+
+/* Buttons */
+.jotter-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-direction: column;
+  width: 32px;
+  height: 30px;
+  padding: 0;
+  border: none;
+  border-radius: var(--jotter-radius);
+  background: transparent;
+  color: var(--jotter-text-muted);
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: color var(--jotter-transition), background var(--jotter-transition);
+  position: relative;
+}
+
+.jotter-btn .material-icons {
+  pointer-events: none;
+  font-size: 18px;
+  line-height: 1;
+  user-select: none;
+}
+
+.jotter-btn:hover         { color: var(--jotter-accent); background: var(--jotter-btn-hover); }
+.jotter-btn--active       { color: var(--jotter-accent) !important; background: var(--jotter-btn-active-bg) !important; }
+
+.jotter-btn--text {
+  width: auto;
+  padding: 0 10px;
+  font-family: var(--jotter-font-ui);
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  border: 1px solid var(--jotter-border);
+}
+
+/* Separator */
+.jotter-sep {
+  width: 1px;
+  height: 18px;
+  background: var(--jotter-border);
+  margin: 0 4px;
+  flex-shrink: 0;
+}
+
+/* Color button */
+.jotter-color-wrap  { display: inline-flex; align-items: center; flex-shrink: 0; }
+.jotter-color-input { position: absolute; width: 0; height: 0; opacity: 0; pointer-events: none; }
+
+.jotter-color-btn {
+  width: 32px;
+  height: 34px;
+  gap: 0;
+  padding-bottom: 3px;
+}
+
+.jotter-color-swatch {
+  display: block;
+  width: 18px;
+  height: 3px;
+  border-radius: 1px;
+  pointer-events: none;
+  flex-shrink: 0;
+}
+
+/* ─── Editor Area ───────────────────────────────────────────────────────────── */
+
+.jotter-editor-wrap {
+  flex: 1;
+  overflow-y: auto;
+  background: var(--jotter-bg);
+  scrollbar-width: thin;
+  scrollbar-color: var(--jotter-border) transparent;
+}
+.jotter-editor-wrap::-webkit-scrollbar       { width: 6px; }
+.jotter-editor-wrap::-webkit-scrollbar-track { background: transparent; }
+.jotter-editor-wrap::-webkit-scrollbar-thumb { background: var(--jotter-border); border-radius: 3px; }
+
+.jotter-editor {
+  outline: none;
+  padding: 24px 28px;
+  min-height: 200px;
+  font-family: var(--jotter-font-editor);
+  font-size: 16px;
+  line-height: 1.75;
+  color: var(--jotter-text);
+  caret-color: auto;
+  word-break: break-word;
+  /* No --ed-* vars here — themes define them all */
+}
+
+/* Source editor */
+.jotter-source {
+  display: none;
+  width: 100%;
+  min-height: 200px;
+  padding: 24px 28px;
+  background: var(--jotter-bg);
+  color: #3a6030;
+  font-family: var(--jotter-font-ui);
+  font-size: 13px;
+  line-height: 1.7;
+  border: none;
+  outline: none;
+  resize: vertical;
+  caret-color: var(--jotter-accent);
+  tab-size: 2;
+  white-space: pre;
+  overflow-wrap: normal;
+  overflow-x: auto;
+}
+
+/* Dim toolbar controls while in source mode */
+.jotter--source-mode .jotter-btn:not([data-custom="toggleSource"]),
+.jotter--source-mode .jotter-select,
+.jotter--source-mode .jotter-color-btn {
+  opacity: 0.35;
+  pointer-events: none;
+}
+
+.jotter-editor:empty::before {
+  content: attr(data-placeholder);
+  color: var(--jotter-text-muted);
+  pointer-events: none;
+  font-style: italic;
+}
+
+/* ── Editor typography ──────────────────────────────────────────────────────
+   Structural rules only (size, weight, spacing, resets).
+   No colours or custom fonts — those come exclusively from themes below.    */
+
+/* Prevent host-page heading styles from bleeding in */
+.jotter-editor h1, .jotter-editor h2, .jotter-editor h3,
+.jotter-editor h4, .jotter-editor h5, .jotter-editor h6 {
+  text-transform: none;
+  font-family: var(--ed-heading-font, inherit);
+  letter-spacing: var(--ed-heading-tracking, normal);
+}
+
+.jotter-editor h1 { font-size: 2em;   font-weight: 700; margin: 0.6em 0 0.3em;   color: var(--ed-h1, inherit); border-bottom: var(--ed-h1-rule, none); padding-bottom: 0.25em; }
+.jotter-editor h2 { font-size: 1.5em; font-weight: 600; margin: 0.75em 0 0.25em; color: var(--ed-h2, inherit); }
+.jotter-editor h3 { font-size: 1.2em; font-weight: 600; margin: 0.75em 0 0.25em; color: var(--ed-h3, inherit); }
+.jotter-editor h4 { font-size: 1em;   font-weight: 600; margin: 0.75em 0 0.25em; color: var(--ed-h4, inherit); }
+.jotter-editor p  { margin: 0 0 0.85em; }
+
+.jotter-editor a       { color: var(--ed-link, -webkit-link); text-decoration-color: var(--ed-link-deco, auto); text-underline-offset: 3px; }
+.jotter-editor a:hover { text-decoration-color: var(--ed-link, -webkit-link); }
+
+.jotter-editor strong, .jotter-editor b { color: var(--ed-strong, inherit); font-weight: 700; }
+.jotter-editor em,     .jotter-editor i { color: var(--ed-em, inherit); }
+
+.jotter-editor blockquote {
+  margin: 1em 0; padding: 8px 0 8px 20px; font-style: italic;
+  border-left: 3px solid var(--ed-quote-bar, #ccc);
+  color: var(--ed-quote, inherit);
+}
+
+.jotter-editor pre {
+  font-family: var(--ed-code-font, monospace);
+  font-size: 0.875em; margin: 0.75em 0; padding: 12px 16px;
+  overflow-x: auto; white-space: pre-wrap;
+  background: var(--ed-code-bg, transparent);
+  color: var(--ed-code-text, inherit);
+  border: 1px solid var(--ed-code-border, transparent);
+  border-radius: var(--jotter-radius);
+}
+.jotter-editor code {
+  font-family: var(--ed-code-font, monospace);
+  font-size: 0.875em; padding: 1px 4px;
+  background: var(--ed-code-bg, transparent);
+  color: var(--ed-code-text, inherit);
+  border: 1px solid var(--ed-code-border, transparent);
+  border-radius: 2px;
+}
+
+.jotter-editor ul, .jotter-editor ol { padding-left: 24px; margin: 0.5em 0 0.85em; }
+.jotter-editor li { margin-bottom: 0.25em; }
+.jotter-editor ul li::marker { color: var(--ed-marker, inherit); }
+.jotter-editor ol li::marker { color: var(--ed-marker, inherit); }
+.jotter-editor hr  { border: none; border-top: 1px solid var(--ed-hr, currentColor); opacity: 0.2; margin: 1.5em 0; }
+.jotter-editor sub, .jotter-editor sup { font-size: 0.75em; }
+.jotter-editor ::selection { background: var(--ed-selection, highlight); }
+
+/* Table */
+.jotter-editor table { border-collapse: collapse; width: 100%; margin: 0.75em 0; font-size: 0.95em; }
+.jotter-editor th,
+.jotter-editor td   { border: 1px solid var(--ed-table-border, #ccc); padding: 7px 12px; text-align: left; vertical-align: top; min-width: 40px; }
+.jotter-editor th   {
+  background: var(--ed-th-bg, transparent);
+  color: var(--ed-th-text, inherit);
+  font-family: var(--ed-heading-font, inherit);
+  font-size: 0.85em; font-weight: 600; text-transform: none;
+}
+
+/* ─── Content Themes ────────────────────────────────────────────────────────── */
+
+/* Warm — amber/umber */
+.jotter-editor[data-theme="warm"] {
+  --ed-heading-font:    'DM Mono', 'Fira Mono', monospace;
+  --ed-heading-tracking: -0.01em;
+  --ed-caret:           #7a6a4a;
+  --ed-selection:       rgba(122, 106, 74, 0.18);
+  --ed-h1:              #7a6a4a;
+  --ed-h2:              #4a3e28;
+  --ed-h3:              #5a4e38;
+  --ed-h4:              #9a9488;
+  --ed-h1-rule:         1px solid #d8d4cc;
+  --ed-link:            #7a6a4a;
+  --ed-link-deco:       rgba(122, 106, 74, 0.35);
+  --ed-strong:          #1a1612;
+  --ed-em:              #3a3028;
+  --ed-quote:           #7a7468;
+  --ed-quote-bar:       #7a6a4a;
+  --ed-code-font:       'DM Mono', 'Fira Mono', monospace;
+  --ed-code-bg:         #eceae5;
+  --ed-code-border:     #d8d4cc;
+  --ed-code-text:       #3a6030;
+  --ed-marker:          #7a6a4a;
+  --ed-hr:              #d8d4cc;
+  --ed-th-bg:           #f4f3f0;
+  --ed-th-text:         #7a6a4a;
+  --ed-table-border:    #d8d4cc;
+}
+
+/* Ink — editorial navy */
+.jotter-editor[data-theme="ink"] {
+  --ed-heading-font:    'DM Mono', 'Fira Mono', monospace;
+  --ed-heading-tracking: -0.01em;
+  --ed-caret:           #1a2a4a;
+  --ed-selection:       rgba(26, 42, 74, 0.14);
+  --ed-h1:              #0d1f3c;
+  --ed-h2:              #1a2a4a;
+  --ed-h3:              #243560;
+  --ed-h4:              #5a6888;
+  --ed-h1-rule:         1px solid #b8c4d8;
+  --ed-link:            #1a4a8a;
+  --ed-link-deco:       rgba(26, 74, 138, 0.30);
+  --ed-strong:          #0a1428;
+  --ed-em:              #2a3a5a;
+  --ed-quote:           #4a5a78;
+  --ed-quote-bar:       #1a4a8a;
+  --ed-code-font:       'DM Mono', 'Fira Mono', monospace;
+  --ed-code-bg:         #eef0f6;
+  --ed-code-border:     #c8cedd;
+  --ed-code-text:       #1a4a3a;
+  --ed-marker:          #1a4a8a;
+  --ed-hr:              #b8c4d8;
+  --ed-th-bg:           #eef0f6;
+  --ed-th-text:         #1a2a4a;
+  --ed-table-border:    #b8c4d8;
+}
+
+/* Forest — deep green */
+.jotter-editor[data-theme="forest"] {
+  --ed-heading-font:    'DM Mono', 'Fira Mono', monospace;
+  --ed-heading-tracking: -0.01em;
+  --ed-caret:           #1a3a28;
+  --ed-selection:       rgba(26, 58, 40, 0.14);
+  --ed-h1:              #1a3a28;
+  --ed-h2:              #1e4430;
+  --ed-h3:              #2a5a40;
+  --ed-h4:              #5a7a68;
+  --ed-h1-rule:         1px solid #b0ccc0;
+  --ed-link:            #1a6040;
+  --ed-link-deco:       rgba(26, 96, 64, 0.30);
+  --ed-strong:          #0e2018;
+  --ed-em:              #2a4038;
+  --ed-quote:           #3a5a48;
+  --ed-quote-bar:       #1a6040;
+  --ed-code-font:       'DM Mono', 'Fira Mono', monospace;
+  --ed-code-bg:         #eef5f0;
+  --ed-code-border:     #c0d8c8;
+  --ed-code-text:       #1a5828;
+  --ed-marker:          #1a6040;
+  --ed-hr:              #b0ccc0;
+  --ed-th-bg:           #eef5f0;
+  --ed-th-text:         #1a3a28;
+  --ed-table-border:    #b0ccc0;
+}
+
+/* Responsive video embed */
+.jotter-editor .jotter-video-wrap {
+  position: relative;
+  padding-bottom: 56.25%;
+  height: 0;
+  overflow: hidden;
+  margin: 0.75em 0;
+  border-radius: var(--jotter-radius);
+  border: 1px solid var(--jotter-border);
+}
+.jotter-editor .jotter-video-wrap iframe {
+  position: absolute;
+  top: 0; left: 0;
+  width: 100%;
+  height: 100%;
+  border: none;
+}
+
+/* ─── Status Bar ────────────────────────────────────────────────────────────── */
+
+.jotter-status {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 0 14px;
+  height: var(--jotter-status-h);
+  min-height: var(--jotter-status-h);
+  background: var(--jotter-surface);
+  border-top: 1px solid var(--jotter-border);
+  font-size: 10.5px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--jotter-text-muted);
+}
+.jotter-status-mode { margin-left: auto; color: var(--jotter-accent); font-weight: 600; }
+
+/* ─── Popup ─────────────────────────────────────────────────────────────────── */
+
+.jotter-popup {
+  display: none;
+  position: fixed;
+  z-index: 9999;
+  background: #ffffff;
+  border: 1px solid #d8d4cc;
+  border-radius: 5px;
+  box-shadow: 0 8px 24px rgba(0,0,0,0.12), 0 2px 6px rgba(0,0,0,0.07);
+  min-width: 220px;
+  max-width: 360px;
+}
+
+.jotter-popup--visible { display: block; }
+
+.jotter-popup-inner {
+  padding: 14px;
+}
+
+.jotter-popup-title {
+  font-family: var(--jotter-font-ui);
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  color: #9a9488;
+  margin-bottom: 10px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid #d8d4cc;
+}
+
+.jotter-popup-hint {
+  font-size: 11px;
+  color: #9a9488;
+  margin-top: 8px;
+  text-align: center;
+  letter-spacing: 0.04em;
+}
+
+/* Form layout inside popups */
+.jotter-popup-form {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 280px;
+}
+
+.jotter-popup-label {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: #9a9488;
+  margin-top: 4px;
+}
+
+.jotter-popup-input,
+.jotter-popup-select,
+.jotter-popup-textarea {
+  width: 100%;
+  background: #f8f7f4;
+  border: 1px solid #d8d4cc;
+  border-radius: 3px;
+  color: #1e1c18;
+  font-family: 'DM Mono', 'Fira Mono', monospace;
+  font-size: 12px;
+  padding: 7px 9px;
+  outline: none;
+  transition: border-color 120ms;
+  resize: vertical;
+}
+
+.jotter-popup-input:focus,
+.jotter-popup-select:focus,
+.jotter-popup-textarea:focus { border-color: #7a6a4a; }
+.jotter-popup-select { appearance: auto; cursor: pointer; resize: none; }
+
+.jotter-input--error { border-color: #b85050 !important; }
+
+.jotter-popup-submit {
+  margin-top: 6px;
+  padding: 7px 14px;
+  background: rgba(122,106,74,0.08);
+  border: 1px solid #7a6a4a;
+  border-radius: 3px;
+  color: #7a6a4a;
+  font-family: 'DM Mono', 'Fira Mono', monospace;
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  cursor: pointer;
+  transition: background 120ms;
+}
+
+.jotter-popup-submit:hover { background: rgba(122,106,74,0.16); }
+
+/* Table grid picker */
+.jotter-table-grid {
+  display: grid;
+  gap: 3px;
+}
+
+.jotter-table-cell {
+  width: 18px;
+  height: 18px;
+  border: 1px solid #d8d4cc;
+  border-radius: 2px;
+  cursor: pointer;
+  transition: border-color 80ms, background 80ms;
+}
+
+.jotter-table-cell--active {
+  background: rgba(122,106,74,0.14);
+  border-color: #7a6a4a;
+}
+
+/* Symbol / special char grid */
+.jotter-char-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px;
+  max-width: 300px;
+  max-height: 220px;
+  overflow-y: auto;
+  scrollbar-width: thin;
+  scrollbar-color: #d8d4cc transparent;
+}
+
+.jotter-char-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border: 1px solid #d8d4cc;
+  border-radius: 3px;
+  background: transparent;
+  color: #1e1c18;
+  font-size: 14px;
+  cursor: pointer;
+  transition: background 80ms, border-color 80ms, color 80ms;
+  flex-shrink: 0;
+}
+
+.jotter-char-btn:hover {
+  background: rgba(122,106,74,0.10);
+  border-color: #7a6a4a;
+  color: #7a6a4a;
+}
+
+/* Lorem ipsum variant buttons */
+.jotter-lorem-btn {
+  display: block;
+  width: 100%;
+  padding: 9px 12px;
+  background: transparent;
+  border: 1px solid #d8d4cc;
+  border-radius: 3px;
+  color: #1e1c18;
+  font-family: 'DM Mono', 'Fira Mono', monospace;
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  text-align: left;
+  cursor: pointer;
+  margin-bottom: 4px;
+  transition: background 100ms, border-color 100ms, color 100ms;
+}
+
+.jotter-lorem-btn:hover {
+  background: rgba(122,106,74,0.07);
+  border-color: #7a6a4a;
+  color: #7a6a4a;
+}

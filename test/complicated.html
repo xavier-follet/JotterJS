@@ -1,0 +1,507 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>HTMLed — Test Page</title>
+
+  <!-- Google Fonts: DM Mono + Playfair Display -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=DM+Mono:ital,wght@0,400;0,500;1,400&family=Playfair+Display:ital,wght@0,700;1,400&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/icon?family=Material+Icons" rel="stylesheet">
+
+  <!-- HTMLed styles (source — swap for dist/htmled.min.css in production) -->
+  <link rel="stylesheet" href="../src/htmled.css" />
+
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg:      #f8f7f4;
+      --surface: #f0ede8;
+      --border:  #d8d4cc;
+      --text:    #1e1c18;
+      --muted:   #9a9488;
+      --accent:  #7a6a4a;
+      --green:   #4a7a4a;
+      --red:     #8a3a3a;
+      --mono:    'DM Mono', monospace;
+      --display: 'Playfair Display', Georgia, serif;
+    }
+
+    html, body {
+      height: 100%;
+      background: var(--bg);
+      color: var(--text);
+      font-family: var(--mono);
+      font-size: 14px;
+      line-height: 1.6;
+    }
+
+    /* ── Layout ── */
+    .page {
+      display: grid;
+      grid-template-rows: auto 1fr;
+      min-height: 100vh;
+    }
+
+    /* ── Header ── */
+    .header {
+      display: flex;
+      align-items: center;
+      gap: 20px;
+      padding: 18px 40px;
+      border-bottom: 1px solid var(--border);
+      background: var(--surface);
+    }
+
+    .header-logo {
+      font-family: var(--display);
+      font-size: 22px;
+      font-weight: 700;
+      color: var(--accent);
+      letter-spacing: -0.01em;
+      user-select: none;
+    }
+
+    .header-logo span {
+      font-style: italic;
+      font-weight: 400;
+    }
+
+    .header-tag {
+      font-size: 10px;
+      letter-spacing: 0.14em;
+      text-transform: uppercase;
+      color: var(--muted);
+      padding: 3px 8px;
+      border: 1px solid var(--border);
+      border-radius: 3px;
+    }
+
+    .header-actions {
+      margin-left: auto;
+      display: flex;
+      gap: 8px;
+    }
+
+    /* ── Main Content ── */
+    .main {
+      display: grid;
+      grid-template-columns: 1fr 340px;
+      gap: 0;
+      overflow: hidden;
+    }
+
+    /* ── Editor Panel ── */
+    .editor-panel {
+      padding: 40px;
+      overflow-y: auto;
+      border-right: 1px solid var(--border);
+    }
+
+    .editor-panel-title {
+      font-family: var(--display);
+      font-size: 28px;
+      font-weight: 700;
+      color: var(--text);
+      margin-bottom: 6px;
+      letter-spacing: -0.02em;
+    }
+
+    .editor-panel-sub {
+      font-size: 11px;
+      color: var(--muted);
+      text-transform: uppercase;
+      letter-spacing: 0.1em;
+      margin-bottom: 28px;
+    }
+
+    /* ── Sidebar ── */
+    .sidebar {
+      display: flex;
+      flex-direction: column;
+      background: var(--surface);
+      overflow: hidden;
+    }
+
+    .sidebar-section {
+      padding: 20px;
+      border-bottom: 1px solid var(--border);
+    }
+
+    .sidebar-label {
+      font-size: 10px;
+      text-transform: uppercase;
+      letter-spacing: 0.12em;
+      color: var(--muted);
+      margin-bottom: 10px;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+
+    .sidebar-label::after {
+      content: '';
+      flex: 1;
+      height: 1px;
+      background: var(--border);
+    }
+
+    /* Output preview */
+    .output-box {
+      background: #eceae5;
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      padding: 12px;
+      font-size: 11px;
+      line-height: 1.6;
+      color: #3a6030;
+      font-family: var(--mono);
+      max-height: 200px;
+      overflow-y: auto;
+      word-break: break-all;
+      white-space: pre-wrap;
+      scrollbar-width: thin;
+      scrollbar-color: var(--border) transparent;
+    }
+
+    /* Event log */
+    .event-log {
+      flex: 1;
+      overflow-y: auto;
+      padding: 16px 20px;
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+      scrollbar-width: thin;
+      scrollbar-color: var(--border) transparent;
+    }
+
+    .event-log-header {
+      font-size: 10px;
+      text-transform: uppercase;
+      letter-spacing: 0.12em;
+      color: var(--muted);
+      margin-bottom: 8px;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+
+    .event-log-header::after {
+      content: '';
+      flex: 1;
+      height: 1px;
+      background: var(--border);
+    }
+
+    .log-entry {
+      display: flex;
+      align-items: flex-start;
+      gap: 8px;
+      font-size: 11px;
+      animation: fadeIn 180ms ease;
+    }
+
+    @keyframes fadeIn {
+      from { opacity: 0; transform: translateY(3px); }
+      to   { opacity: 1; transform: translateY(0); }
+    }
+
+    .log-time {
+      color: var(--muted);
+      flex-shrink: 0;
+      font-size: 10px;
+      margin-top: 1px;
+    }
+
+    .log-badge {
+      font-size: 9px;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+      padding: 1px 5px;
+      border-radius: 2px;
+      flex-shrink: 0;
+      margin-top: 1px;
+    }
+
+    .log-badge--change { background: rgba(122,106,74,0.12);  color: var(--accent); }
+    .log-badge--focus  { background: rgba(74,122,74,0.12);   color: var(--green);  }
+    .log-badge--blur   { background: rgba(154,148,136,0.15); color: var(--muted);  }
+    .log-badge--api    { background: rgba(74,106,160,0.12);  color: #4a6aa0;        }
+
+    .log-msg {
+      color: var(--muted);
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      flex: 1;
+    }
+
+    /* ── Buttons ── */
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 6px 14px;
+      border-radius: 3px;
+      border: 1px solid var(--border);
+      background: transparent;
+      color: var(--text);
+      font-family: var(--mono);
+      font-size: 11px;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+      cursor: pointer;
+      transition: border-color 120ms, background 120ms, color 120ms;
+    }
+
+    .btn:hover {
+      border-color: var(--accent);
+      color: var(--accent);
+      background: rgba(122,106,74,0.06);
+    }
+
+    .btn--primary {
+      border-color: var(--accent);
+      color: var(--accent);
+    }
+
+    .btn--danger:hover {
+      border-color: var(--red);
+      color: var(--red);
+      background: rgba(138,58,58,0.06);
+    }
+
+    .btn-row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-top: 10px;
+    }
+
+    /* Stats grid */
+    .stats {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 8px;
+    }
+
+    .stat-card {
+      background: #eceae5;
+      border: 1px solid var(--border);
+      border-radius: 3px;
+      padding: 10px 12px;
+    }
+
+    .stat-label {
+      font-size: 9px;
+      text-transform: uppercase;
+      letter-spacing: 0.1em;
+      color: var(--muted);
+      margin-bottom: 4px;
+    }
+
+    .stat-value {
+      font-size: 18px;
+      font-family: var(--display);
+      font-weight: 700;
+      color: var(--accent);
+    }
+
+    /* Set HTML textarea */
+    .set-html-area {
+      width: 100%;
+      resize: vertical;
+      background: #eceae5;
+      border: 1px solid var(--border);
+      border-radius: 3px;
+      padding: 10px;
+      color: #3a6030;
+      font-family: var(--mono);
+      font-size: 11px;
+      line-height: 1.5;
+      outline: none;
+      transition: border-color 120ms;
+      min-height: 60px;
+    }
+
+    .set-html-area:focus {
+      border-color: var(--accent);
+    }
+
+    /* Scrollbars */
+    ::-webkit-scrollbar { width: 5px; height: 5px; }
+    ::-webkit-scrollbar-track { background: transparent; }
+    ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+
+    @media (max-width: 768px) {
+      .main { grid-template-columns: 1fr; }
+      .sidebar { display: none; }
+      .editor-panel { padding: 24px 20px; }
+      .header { padding: 14px 20px; }
+    }
+  </style>
+</head>
+<body>
+<div class="page">
+
+  <!-- Header -->
+  <header class="header">
+    <div class="header-logo">HTML<span>ed</span></div>
+    <span class="header-tag">v0.1.0</span>
+    <span class="header-tag">Vanilla JS</span>
+    <div class="header-actions">
+      <button class="btn btn--primary" id="btn-get-html">Get HTML</button>
+      <button class="btn btn--danger"  id="btn-clear">Clear</button>
+    </div>
+  </header>
+
+  <!-- Main -->
+  <div class="main">
+
+    <!-- Editor Panel -->
+    <div class="editor-panel">
+      <div class="editor-panel-title">Rich Text Editor</div>
+      <div class="editor-panel-sub">Test Page — Development Environment</div>
+
+      <!-- The editor mounts here -->
+      <div id="editor-mount">
+        <p>Welcome to <strong>HTMLed</strong> — a lightweight vanilla JS rich text editor.</p>
+        <p>Try the toolbar above: format text, insert headings, create lists, add links. Use <em>Tab</em> for indentation and all standard keyboard shortcuts.</p>
+        <blockquote>The best tools get out of the way and let you create.</blockquote>
+        <p>This is a test page — check the sidebar for live output and event logs.</p>
+      </div>
+    </div>
+
+    <!-- Sidebar -->
+    <aside class="sidebar">
+      <!-- Stats -->
+      <div class="sidebar-section">
+        <div class="sidebar-label">Stats</div>
+        <div class="stats">
+          <div class="stat-card">
+            <div class="stat-label">Words</div>
+            <div class="stat-value" id="stat-words">—</div>
+          </div>
+          <div class="stat-card">
+            <div class="stat-label">Chars</div>
+            <div class="stat-value" id="stat-chars">—</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Set HTML -->
+      <div class="sidebar-section">
+        <div class="sidebar-label">Set HTML</div>
+        <textarea class="set-html-area" id="set-html-input" rows="3" placeholder="Paste HTML here…"></textarea>
+        <div class="btn-row">
+          <button class="btn" id="btn-set-html">Inject</button>
+          <button class="btn" id="btn-toggle-enabled">Disable</button>
+        </div>
+      </div>
+
+      <!-- HTML Output -->
+      <div class="sidebar-section">
+        <div class="sidebar-label">HTML Output</div>
+        <div class="output-box" id="output-box">—</div>
+      </div>
+
+      <!-- Event Log -->
+      <div class="sidebar-label" style="padding:16px 20px 0; margin:0;">Events</div>
+      <div class="event-log" id="event-log"></div>
+    </aside>
+
+  </div>
+</div>
+
+<!-- HTMLed script (source — swap for dist/htmled.min.js in production) -->
+<script type="module">
+  import HTMLed from '../src/htmled.js';
+
+  const editor = new HTMLed('#editor-mount', {
+    placeholder: 'Start writing…',
+    height: '420px',
+  });
+
+  // ─── Stats ────────────────────────────────────────────────────────────────
+  const statWords = document.getElementById('stat-words');
+  const statChars = document.getElementById('stat-chars');
+  const outputBox = document.getElementById('output-box');
+
+  function refreshStats() {
+    const text  = editor.getText();
+    const words = text.trim() === '' ? 0 : text.trim().split(/\s+/).length;
+    const chars = text.replace(/\n/g, '').length;
+    statWords.textContent = words;
+    statChars.textContent = chars;
+    outputBox.textContent = editor.getHTML() || '—';
+  }
+
+  refreshStats();
+
+  // ─── Event Log ────────────────────────────────────────────────────────────
+  const logEl = document.getElementById('event-log');
+
+  function addLog(type, msg) {
+    const now = new Date();
+    const time = `${String(now.getHours()).padStart(2,'0')}:${String(now.getMinutes()).padStart(2,'0')}:${String(now.getSeconds()).padStart(2,'0')}`;
+    const entry = document.createElement('div');
+    entry.className = 'log-entry';
+    entry.innerHTML = `
+      <span class="log-time">${time}</span>
+      <span class="log-badge log-badge--${type}">${type}</span>
+      <span class="log-msg">${msg}</span>
+    `;
+    logEl.appendChild(entry);
+    logEl.scrollTop = logEl.scrollHeight;
+
+    // Keep log at max 60 entries
+    while (logEl.children.length > 60) logEl.removeChild(logEl.firstChild);
+  }
+
+  // ─── Editor Events ────────────────────────────────────────────────────────
+  editor.on('change', html => {
+    refreshStats();
+    addLog('change', `${html.length} bytes`);
+  });
+
+  editor.on('focus', () => addLog('focus', 'editor focused'));
+  editor.on('blur',  () => addLog('blur',  'editor blurred'));
+
+  // ─── Toolbar Buttons ──────────────────────────────────────────────────────
+  document.getElementById('btn-get-html').addEventListener('click', () => {
+    const html = editor.getHTML();
+    outputBox.textContent = html;
+    addLog('api', `getHTML() → ${html.length} bytes`);
+  });
+
+  document.getElementById('btn-clear').addEventListener('click', () => {
+    editor.clear();
+    refreshStats();
+    addLog('api', 'clear()');
+  });
+
+  let enabled = true;
+  const toggleBtn = document.getElementById('btn-toggle-enabled');
+  toggleBtn.addEventListener('click', () => {
+    enabled = !enabled;
+    editor.setEnabled(enabled);
+    toggleBtn.textContent = enabled ? 'Disable' : 'Enable';
+    addLog('api', `setEnabled(${enabled})`);
+  });
+
+  document.getElementById('btn-set-html').addEventListener('click', () => {
+    const val = document.getElementById('set-html-input').value.trim();
+    if (!val) return;
+    editor.setHTML(val);
+    refreshStats();
+    addLog('api', `setHTML() — ${val.length} bytes`);
+  });
+
+  addLog('api', 'editor initialized');
+</script>
+</body>
+</html>
