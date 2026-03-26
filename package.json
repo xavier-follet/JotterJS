@@ -1,18 +1,45 @@
 {
   "name": "jotterjs",
-  "version": "0.1.0",
-  "description": "The simplest, lightweight vanilla JavaScript HTML editor—no dependencies, just pure editing power.",
+  "version": "0.1.1",
+  "description": "A lightweight, vanilla JS rich-text editor component. No dependencies.",
   "main": "dist/jotter.min.js",
+  "module": "dist/jotter.js",
+  "exports": {
+    ".": {
+      "import": "./dist/jotter.js",
+      "default": "./dist/jotter.min.js"
+    },
+    "./dist/jotter.min.css": "./dist/jotter.min.css"
+  },
   "scripts": {
     "start": "node scripts/serve.js",
     "build": "node scripts/build.js",
-    "dev": "node scripts/serve.js"
-  },
-  "devDependencies": {
-    "esbuild": "^0.20.0"
+    "dev": "node scripts/serve.js",
+    "prepublishOnly": "npm run build"
   },
   "files": [
     "dist"
   ],
-  "license": "MIT"
+  "keywords": [
+    "rich-text",
+    "editor",
+    "wysiwyg",
+    "contenteditable",
+    "vanilla-js",
+    "html-editor",
+    "text-editor"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/xavier-follet/JotterJS.git"
+  },
+  "homepage": "https://github.com/xavier-follet/JotterJS",
+  "bugs": {
+    "url": "https://github.com/xavier-follet/JotterJS/issues"
+  },
+  "author": "Xavier Follet",
+  "license": "MIT",
+  "devDependencies": {
+    "esbuild": "^0.20.0"
+  }
 }

@@ -210,6 +210,7 @@ class JotterJS {
     this._editor.style.minHeight = this._options.height;
     this._editor.innerHTML = this._sanitize(initialHTML);
     this._editor.spellcheck = true;
+    document.execCommand('defaultParagraphSeparator', false, 'p');
 
     this._source = document.createElement('textarea');
     this._source.className = 'jotter-source';
@@ -925,6 +926,33 @@ class JotterJS {
 
   _bindEvents() {
     this._editor.addEventListener('input', () => {
+      // Replace any top-level <div> elements with <p> to enforce paragraph semantics
+      this._editor.querySelectorAll(':scope > div').forEach(d => {
+        const p = document.createElement('p');
+        p.innerHTML = d.innerHTML;
+        d.replaceWith(p);
+      });
+      // Wrap bare top-level text nodes in <p>, preserving caret position
+      Array.from(this._editor.childNodes).forEach(node => {
+        if (node.nodeType === Node.TEXT_NODE && node.textContent.trim() !== '') {
+          const sel = window.getSelection();
+          let caretOffset = null;
+          if (sel && sel.rangeCount) {
+            const r = sel.getRangeAt(0);
+            if (r.startContainer === node) caretOffset = r.startOffset;
+          }
+          const p = document.createElement('p');
+          node.replaceWith(p);
+          p.appendChild(node);
+          if (caretOffset !== null) {
+            const r = document.createRange();
+            r.setStart(node, caretOffset);
+            r.collapse(true);
+            sel.removeAllRanges();
+            sel.addRange(r);
+          }
+        }
+      });
       this._updateStatus();
       this._emit('change', this.getHTML());
       if (this._options.onChange) this._options.onChange(this.getHTML());
