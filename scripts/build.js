@@ -36,6 +36,8 @@ if (!fs.existsSync(distDir)) fs.mkdirSync(distDir);
     bundle: true,
     minify: true,
     outfile: 'dist/jotter.min.css',
+    loader: { '.woff2': 'file' },
+    assetNames: 'fonts/[name]',
   });
 
   // Unminified ESM for development / inspection
