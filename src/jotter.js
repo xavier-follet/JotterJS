@@ -94,7 +94,7 @@ const TOOLBAR_ACTIONS = [
   { type: 'popup', id: 'embed',       icon: 'html',          title: 'Insert Embed'          },
   { type: 'popup', id: 'symbol',      icon: 'emoji_symbols', title: 'Insert Symbol'         },
   { type: 'popup', id: 'specialchar', icon: 'format_shapes', title: 'Special Characters'    },
-  { type: 'popup', id: 'lorem',       icon: 'article',       title: 'Insert Lorem Ipsum'    },
+  { type: 'popup', id: 'lorem',       icon: 'script',       title: 'Insert Lorem Ipsum'    },
   { type: 'sep' },
   { type: 'theme' },
   { type: 'sep' },
@@ -926,8 +926,11 @@ class JotterJS {
 
   _bindEvents() {
     this._editor.addEventListener('input', () => {
-      // Replace any top-level <div> elements with <p> to enforce paragraph semantics
+      // Normalize the bare <div>s browsers insert on Enter into <p> to enforce
+      // paragraph semantics. Only touch attribute-less divs — a div carrying
+      // style/class/etc. is intentional layout content and must be preserved.
       this._editor.querySelectorAll(':scope > div').forEach(d => {
+        if (d.attributes.length > 0) return;
         const p = document.createElement('p');
         p.innerHTML = d.innerHTML;
         d.replaceWith(p);
