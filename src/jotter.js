@@ -12,6 +12,17 @@
  * @param {Function}       [options.onChange]                Callback(html) fired on every content change.
  * @param {Function}       [options.onFocus]                 Callback fired on editor focus.
  * @param {Function}       [options.onBlur]                  Callback fired on editor blur.
+ * @param {Function}       [options.onRequestImage]          async(ctx) → {src, alt, width} | string | null.
+ * @param {Function}       [options.onRequestLink]           async(ctx) → {href, text, title, target} | string | null.
+ * @param {Function}       [options.onRequestVideo]          async(ctx) → {url} | {id} | string | null.
+ * @param {Function}       [options.onRequestEmbed]          async(ctx) → {html} | string | null.
+ *
+ * Any onRequest* hook replaces the matching built-in popup: the toolbar button
+ * awaits the hook instead of opening the popup, and the editor keeps ownership
+ * of bookmarking the caret, restoring it, building the HTML and emitting change.
+ * Returning null (or throwing) means "cancelled". While a hook is pending the
+ * editor suppresses focus/blur emission, so host modals cannot trigger
+ * save-on-blur → re-render → remount while their own UI is still open.
  *
  * @fires change  (html: string)
  * @fires focus
@@ -21,10 +32,15 @@
  *   getHTML()           → string   Raw innerHTML (sanitized). In source mode returns textarea value.
  *   getText()           → string   Plain text (innerText).
  *   setHTML(html)                  Replace content; sanitized before insertion.
- *   insertHTML(html)               Insert sanitized HTML at caret / selection.
- *   insertText(text)               Insert plain text at caret.
+ *   insertHTML(html, opts)         Insert sanitized HTML at caret / selection, or at opts.at bookmark.
+ *   insertText(text, opts)         Insert plain text at caret, or at opts.at bookmark.
  *   clear()                        Empty the editor.
  *   focus()                        Focus the editable area.
+ *   saveSelection()     → token    Bookmark the current selection; survives DOM mutation.
+ *   restoreSelection(t)            Restore (and consume) a bookmark from saveSelection().
+ *   releaseSelection(t)            Discard a bookmark without restoring it.
+ *   beginExternalUI()              Host UI is taking over: suppress focus/blur, bookmark the caret.
+ *   endExternalUI(opts)            Host UI is done: restore the caret (unless opts.restore === false).
  *   setTheme(name)                 Change content theme at runtime.
  *   setEnabled(bool)               Toggle contenteditable.
  *   toggleSource()                 Switch between rich-text and raw HTML source view.
@@ -48,6 +64,10 @@
 //   { cmd: string, icon?, label?, title }        → document.execCommand wrapper
 //   { custom: string, icon?, label?, title }     → internal method dispatch
 //   { icon?, label?, title, onClick(editor) }    → external callback button
+//
+// `onClick` outranks `type`: a descriptor carrying one always renders as a
+// plain callback button, so `{ ...JotterJS.actions.image, onClick: fn }` really
+// does replace the built-in Insert Image popup instead of being ignored.
 //
 // Any action with `label` renders a text button (.jotter-btn--text) instead of an icon.
 //
@@ -149,6 +169,17 @@ Object.freeze(PRESETS);
 
 const TOOLBAR_ACTIONS = PRESETS.full;
 
+/**
+ * Popup id → constructor option that replaces it. Present here means a host can
+ * hand the whole interaction to its own UI; every other popup is built-in only.
+ */
+const RESOLVER_OPTIONS = {
+  image: 'onRequestImage',
+  link:  'onRequestLink',
+  video: 'onRequestVideo',
+  embed: 'onRequestEmbed',
+};
+
 const HEADING_OPTIONS = [
   { label: 'Paragraph',  tag: 'p'          },
   { label: 'Heading 1',  tag: 'h1'         },
@@ -224,19 +255,29 @@ class JotterJS {
       onChange: null,
       onFocus: null,
       onBlur: null,
+      onRequestImage: null,
+      onRequestLink: null,
+      onRequestVideo: null,
+      onRequestEmbed: null,
     }, options);
 
-    this._listeners    = {};
-    this._savedRange   = null;
-    this._lastForeColor   = '#e8e4d8';
-    this._lastHiliteColor = '#c8a96e';
+    this._listeners        = {};
+    this._bookmarks        = new Map();  // token → { start, end } marker nodes
+    this._bmSeq            = 0;
+    this._savedBookmark    = null;       // caret held across a toolbar interaction
+    this._externalBookmark = null;       // caret held across host UI (see beginExternalUI)
+    this._externalDepth    = 0;
+    this._changeCount      = 0;
+    this._destroyed        = false;
+    this._lastForeColor    = '#e8e4d8';
+    this._lastHiliteColor  = '#c8a96e';
     this._init();
   }
 
   // ─── Init ─────────────────────────────────────────────────────────────────
   // Popup is appended to document.body (not the root) to escape overflow:hidden.
-  // _savedRange stores the selection before any toolbar interaction steals focus,
-  // so popup submit handlers can restore it via _restoreRange().
+  // _savedBookmark holds the selection before any toolbar interaction steals
+  // focus, so popup submit handlers can put it back via _restoreSavedBookmark().
 
   _init() {
     const initialHTML = this._target.innerHTML || '';
@@ -300,8 +341,14 @@ class JotterJS {
     return bar;
   }
 
-  /** Dispatches an action descriptor to the appropriate builder. */
+  /**
+   * Dispatches an action descriptor to the appropriate builder.
+   * `onClick` is checked before `type` so a host can override any built-in —
+   * popup actions included — with `{ ...JotterJS.actions.image, onClick: fn }`.
+   */
   _buildAction(action) {
+    if (typeof action.onClick === 'function') return this._buildBtn(action);
+
     switch (action.type) {
       case 'sep':         return this._makeSep();
       case 'blockformat': return this._buildBlockFormatSelect();
@@ -350,29 +397,28 @@ class JotterJS {
       e.preventDefault();
       this._editor.focus();
 
-      if (action.onClick) {
-        action.onClick(this);
-      } else if (action.custom === 'toggleSource') {
-        this._toggleSourceMode();
-      } else if (action.custom === 'code') {
-        this._toggleInlineCode();
-      } else if (action.cmd === 'copy') {
-        document.execCommand('copy');
-      } else if (action.cmd === 'cut') {
-        document.execCommand('cut');
-      } else if (action.cmd === 'paste') {
-        this._pasteFromClipboard();
-      } else if (action.prompt) {
-        const val = window.prompt(action.prompt);
-        if (val) document.execCommand(action.cmd, false, val);
-      } else {
-        document.execCommand(action.cmd, false, null);
-      }
+      this._applyEdit(() => {
+        if (action.onClick) {
+          action.onClick(this);
+        } else if (action.custom === 'toggleSource') {
+          this._toggleSourceMode();
+        } else if (action.custom === 'code') {
+          this._toggleInlineCode();
+        } else if (action.cmd === 'copy') {
+          document.execCommand('copy');
+        } else if (action.cmd === 'cut') {
+          document.execCommand('cut');
+        } else if (action.cmd === 'paste') {
+          this._pasteFromClipboard();
+        } else if (action.prompt) {
+          const val = window.prompt(action.prompt);
+          if (val) document.execCommand(action.cmd, false, val);
+        } else {
+          document.execCommand(action.cmd, false, null);
+        }
+      });
 
       this._updateToolbarState();
-      this._updateStatus();
-      this._emit('change', this.getHTML());
-      if (this._options.onChange) this._options.onChange(this.getHTML());
     });
 
     return btn;
@@ -389,14 +435,10 @@ class JotterJS {
       opt.textContent = label;
       sel.appendChild(opt);
     });
-    sel.addEventListener('mousedown', () => { this._savedRange = this._saveRange(); });
+    sel.addEventListener('mousedown', () => this._saveBookmark());
     sel.addEventListener('change', () => {
-      this._restoreRange(this._savedRange);
-      document.execCommand('formatBlock', false, sel.value);
-      this._editor.focus();
-      this._updateStatus();
-      this._emit('change', this.getHTML());
-      if (this._options.onChange) this._options.onChange(this.getHTML());
+      this._restoreSavedBookmark();
+      this._applyEdit(() => document.execCommand('formatBlock', false, sel.value));
     });
     return sel;
   }
@@ -417,14 +459,11 @@ class JotterJS {
       opt.style.fontFamily = f;
       sel.appendChild(opt);
     });
-    sel.addEventListener('mousedown', () => { this._savedRange = this._saveRange(); });
+    sel.addEventListener('mousedown', () => this._saveBookmark());
     sel.addEventListener('change', () => {
       if (!sel.value) return;
-      this._restoreRange(this._savedRange);
-      document.execCommand('fontName', false, sel.value);
-      this._editor.focus();
-      this._emit('change', this.getHTML());
-      if (this._options.onChange) this._options.onChange(this.getHTML());
+      this._restoreSavedBookmark();
+      this._applyEdit(() => document.execCommand('fontName', false, sel.value));
     });
     return sel;
   }
@@ -444,14 +483,11 @@ class JotterJS {
       opt.textContent = `${s}px`;
       sel.appendChild(opt);
     });
-    sel.addEventListener('mousedown', () => { this._savedRange = this._saveRange(); });
+    sel.addEventListener('mousedown', () => this._saveBookmark());
     sel.addEventListener('change', () => {
       if (!sel.value) return;
-      this._restoreRange(this._savedRange);
-      this._applyFontSize(sel.value);
-      this._editor.focus();
-      this._emit('change', this.getHTML());
-      if (this._options.onChange) this._options.onChange(this.getHTML());
+      this._restoreSavedBookmark();
+      this._applyEdit(() => this._applyFontSize(sel.value));
     });
     return sel;
   }
@@ -506,16 +542,13 @@ class JotterJS {
       swatch.style.background = color;
       if (action.cmd === 'foreColor') this._lastForeColor = color;
       else this._lastHiliteColor = color;
-      this._restoreRange(this._savedRange);
-      this._editor.focus();
-      document.execCommand(action.cmd, false, color);
-      this._emit('change', this.getHTML());
-      if (this._options.onChange) this._options.onChange(this.getHTML());
+      this._restoreSavedBookmark();
+      this._applyEdit(() => document.execCommand(action.cmd, false, color));
     });
 
     btn.addEventListener('mousedown', e => {
       e.preventDefault();
-      this._savedRange = this._saveRange();
+      this._saveBookmark();
       input.click();
     });
 
@@ -528,6 +561,8 @@ class JotterJS {
   // Single _popup element on document.body; toggled via _showPopup / _hidePopup.
   // Clicking the same button again dismisses the popup (toggle).
   // Outside-click and Escape both close it (see _bindEvents).
+  // A popup whose id has an onRequest* hook is never built: the button hands
+  // over to the host resolver instead (see _runResolver).
 
   _buildPopupBtn(action) {
     const btn = document.createElement('button');
@@ -543,10 +578,17 @@ class JotterJS {
 
     btn.addEventListener('mousedown', e => {
       e.preventDefault();
-      this._savedRange = this._saveRange();
 
-      if (this._popup.classList.contains('jotter-popup--visible') &&
-          this._popup.dataset.popupId === action.id) {
+      const resolver = this._resolverFor(action.id);
+      if (resolver) {
+        this._hidePopup();
+        this._runResolver(action.id, resolver);
+        return;
+      }
+
+      this._saveBookmark();
+
+      if (this._popupVisible() && this._popup.dataset.popupId === action.id) {
         this._hidePopup();
         return;
       }
@@ -584,9 +626,15 @@ class JotterJS {
     });
   }
 
+  _popupVisible() {
+    return this._popup.classList.contains('jotter-popup--visible');
+  }
+
+  /** Hides the popup and drops the caret bookmark it was holding (no-op if already consumed). */
   _hidePopup() {
     this._popup.classList.remove('jotter-popup--visible');
     this._popup.dataset.popupId = '';
+    this._releaseSavedBookmark();
   }
 
   /** Returns the DOM subtree for the popup identified by id. */
@@ -641,10 +689,7 @@ class JotterJS {
               +cl.dataset.r <= r && +cl.dataset.c <= c);
           });
         });
-        cell.addEventListener('click', () => {
-          this._insertTable(r + 1, c + 1);
-          this._hidePopup();
-        });
+        cell.addEventListener('click', () => this._insertTable(r + 1, c + 1));
 
         cells.push(cell);
         grid.appendChild(cell);
@@ -656,9 +701,18 @@ class JotterJS {
     return wrap;
   }
 
+  /**
+   * Completes a popup interaction: caret back where it was, popup closed, edit
+   * applied. The popup goes away before the change is announced, so a host that
+   * re-renders on change never remounts the editor with its popup still open.
+   */
+  _commitPopup(fn) {
+    this._restoreSavedBookmark();
+    this._hidePopup();
+    this._applyEdit(fn);
+  }
+
   _insertTable(rows, cols) {
-    this._restoreRange(this._savedRange);
-    this._editor.focus();
     let html = '<table><tbody>';
     for (let r = 0; r < rows; r++) {
       html += '<tr>';
@@ -668,9 +722,7 @@ class JotterJS {
       html += '</tr>';
     }
     html += '</tbody></table><p><br></p>';
-    document.execCommand('insertHTML', false, html);
-    this._emit('change', this.getHTML());
-    if (this._options.onChange) this._options.onChange(this.getHTML());
+    this._commitPopup(() => document.execCommand('insertHTML', false, html));
   }
 
   /**
@@ -683,20 +735,8 @@ class JotterJS {
     wrap.className = 'jotter-popup-inner jotter-popup-form';
     wrap.appendChild(this._popupTitle('Insert Link'));
 
-    // Walk up from anchorNode to find an <a> ancestor within the editor
-    let existingAnchor = null;
-    let selectedText = '';
-    if (this._savedRange) {
-      const sel = window.getSelection();
-      if (sel && sel.rangeCount) {
-        selectedText = sel.toString();
-        let node = sel.anchorNode;
-        while (node && node !== this._editor) {
-          if (node.nodeName === 'A') { existingAnchor = node; break; }
-          node = node.parentNode;
-        }
-      }
-    }
+    const existingAnchor = this._anchorInSelection();
+    const selectedText   = this._selectedText();
 
     const urlInput    = this._makeField(wrap, 'URL', 'url', 'https://');
     const textInput   = this._makeField(wrap, 'Link text (leave blank to keep selection)', 'text', '');
@@ -727,25 +767,19 @@ class JotterJS {
     wrap.appendChild(this._makeSubmitBtn(existingAnchor ? 'Update Link' : 'Insert Link', () => {
       const href = urlInput.value.trim();
       if (!href) return;
-      const linkText = textInput.value.trim() || selectedText || href;
-      const title    = titleInput.value.trim();
-      const target   = targetSel.value;
-      let attrs = `href="${this._esc(href)}"`;
-      if (target) attrs += ` target="${this._esc(target)}"`;
-      if (title)  attrs += ` title="${this._esc(title)}"`;
-      this._restoreRange(this._savedRange);
-      this._editor.focus();
-      if (existingAnchor) {
-        existingAnchor.href = href;
-        if (target) existingAnchor.target = target; else existingAnchor.removeAttribute('target');
-        if (title)  existingAnchor.title = title;  else existingAnchor.removeAttribute('title');
-        existingAnchor.textContent = linkText;
-      } else {
-        document.execCommand('insertHTML', false, `<a ${attrs}>${this._esc(linkText)}</a>`);
-      }
-      this._hidePopup();
-      this._emit('change', this.getHTML());
-      if (this._options.onChange) this._options.onChange(this.getHTML());
+      const text   = textInput.value.trim() || selectedText || href;
+      const title  = titleInput.value.trim();
+      const target = targetSel.value;
+      this._commitPopup(() => {
+        if (existingAnchor) {
+          existingAnchor.href = href;
+          if (target) existingAnchor.target = target; else existingAnchor.removeAttribute('target');
+          if (title)  existingAnchor.title = title;  else existingAnchor.removeAttribute('title');
+          existingAnchor.textContent = text;
+        } else {
+          document.execCommand('insertHTML', false, this._linkHTML({ href, text, title, target }));
+        }
+      });
     }));
 
     return wrap;
@@ -764,16 +798,8 @@ class JotterJS {
     wrap.appendChild(this._makeSubmitBtn('Insert Image', () => {
       const src = urlInput.value.trim();
       if (!src) return;
-      const alt = altInput.value.trim();
-      const w = widthInput.value.trim();
-      const style = w ? `max-width:${w}` : 'max-width:100%';
-      this._restoreRange(this._savedRange);
-      this._editor.focus();
-      document.execCommand('insertHTML', false,
-        `<img src="${this._esc(src)}" alt="${this._esc(alt)}" style="${style}">`);
-      this._hidePopup();
-      this._emit('change', this.getHTML());
-      if (this._options.onChange) this._options.onChange(this.getHTML());
+      const html = this._imageHTML({ src, alt: altInput.value.trim(), width: widthInput.value.trim() });
+      this._commitPopup(() => document.execCommand('insertHTML', false, html));
     }));
 
     return wrap;
@@ -791,13 +817,7 @@ class JotterJS {
       const id = this._ytId(urlInput.value.trim());
       if (!id) { urlInput.classList.add('jotter-input--error'); return; }
       urlInput.classList.remove('jotter-input--error');
-      const html = `<div class="jotter-video-wrap"><iframe src="https://www.youtube.com/embed/${id}" frameborder="0" allowfullscreen loading="lazy" title="YouTube video"></iframe></div><p><br></p>`;
-      this._restoreRange(this._savedRange);
-      this._editor.focus();
-      document.execCommand('insertHTML', false, html);
-      this._hidePopup();
-      this._emit('change', this.getHTML());
-      if (this._options.onChange) this._options.onChange(this.getHTML());
+      this._commitPopup(() => document.execCommand('insertHTML', false, this._videoHTML(id)));
     }));
 
     return wrap;
@@ -830,12 +850,7 @@ class JotterJS {
     wrap.appendChild(this._makeSubmitBtn('Insert', () => {
       const html = ta.value.trim();
       if (!html) return;
-      this._restoreRange(this._savedRange);
-      this._editor.focus();
-      document.execCommand('insertHTML', false, html + '<p><br></p>');
-      this._hidePopup();
-      this._emit('change', this.getHTML());
-      if (this._options.onChange) this._options.onChange(this.getHTML());
+      this._commitPopup(() => document.execCommand('insertHTML', false, this._embedHTML(html)));
     }));
 
     return wrap;
@@ -870,12 +885,7 @@ class JotterJS {
       btn.title = `U+${ch.codePointAt(0).toString(16).toUpperCase().padStart(4, '0')}`;
       btn.addEventListener('mousedown', e => {
         e.preventDefault();
-        this._restoreRange(this._savedRange);
-        this._editor.focus();
-        document.execCommand('insertText', false, ch);
-        this._hidePopup();
-        this._emit('change', this.getHTML());
-        if (this._options.onChange) this._options.onChange(this.getHTML());
+        this._commitPopup(() => document.execCommand('insertText', false, ch));
       });
       grid.appendChild(btn);
     });
@@ -894,16 +904,8 @@ class JotterJS {
       btn.textContent = v.label;
       btn.addEventListener('mousedown', e => {
         e.preventDefault();
-        this._restoreRange(this._savedRange);
-        this._editor.focus();
-        if (v.isHTML) {
-          document.execCommand('insertHTML', false, v.text);
-        } else {
-          document.execCommand('insertText', false, v.text);
-        }
-        this._hidePopup();
-        this._emit('change', this.getHTML());
-        if (this._options.onChange) this._options.onChange(this.getHTML());
+        this._commitPopup(() => document.execCommand(
+          v.isHTML ? 'insertHTML' : 'insertText', false, v.text));
       });
       wrap.appendChild(btn);
     });
@@ -945,7 +947,162 @@ class JotterJS {
 
   /** Escapes ", <, > for safe insertion into HTML attribute values and text. */
   _esc(s) {
-    return s.replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    return String(s).replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  }
+
+  // ─── Insertion markup ─────────────────────────────────────────────────────
+  // Single source of truth for what each insertable looks like. The built-in
+  // popups and the onRequest* resolver hooks both go through these, so host UI
+  // produces byte-identical markup to the popup it replaced.
+
+  _imageHTML({ src, alt, width }) {
+    const style = width ? `max-width:${width}` : 'max-width:100%';
+    return `<img src="${this._esc(src)}" alt="${this._esc(alt || '')}" style="${this._esc(style)}">`;
+  }
+
+  _linkHTML({ href, text, title, target }) {
+    let attrs = `href="${this._esc(href)}"`;
+    if (target) attrs += ` target="${this._esc(target)}"`;
+    if (title)  attrs += ` title="${this._esc(title)}"`;
+    return `<a ${attrs}>${this._esc(text || href)}</a>`;
+  }
+
+  /** @param {string} id  An 11-char YouTube id — anything else yields null. */
+  _videoHTML(id) {
+    if (!/^[A-Za-z0-9_-]{11}$/.test(id)) return null;
+    return `<div class="jotter-video-wrap"><iframe src="https://www.youtube.com/embed/${id}" frameborder="0" allowfullscreen loading="lazy" title="YouTube video"></iframe></div><p><br></p>`;
+  }
+
+  /** Embeds are inserted verbatim — the host, not the end user, supplies them. */
+  _embedHTML(html) {
+    return html + '<p><br></p>';
+  }
+
+  // ─── Resolver hooks ───────────────────────────────────────────────────────
+  // An onRequest* option replaces the built-in popup for that insertable. The
+  // editor still owns the caret bookmark, the blur suppression, the markup and
+  // the change emit; the host only answers "which image / link / video / embed?".
+
+  _resolverFor(id) {
+    const key = RESOLVER_OPTIONS[id];
+    const fn  = key ? this._options[key] : null;
+    return typeof fn === 'function' ? fn : null;
+  }
+
+  /**
+   * Bookmarks the caret, awaits the host, then inserts at the bookmark.
+   * A null/false/throwing result means cancelled — the caret still comes back.
+   */
+  async _runResolver(id, resolver) {
+    const ctx = this._resolverContext(id);
+    this.beginExternalUI();
+
+    let result = null;
+    try {
+      result = await resolver(ctx);
+    } catch (_) {
+      result = null;
+    }
+    if (this._destroyed) return;
+
+    const html = (result === null || result === undefined || result === false)
+      ? null
+      : this._resolvedHTML(id, result, ctx);
+
+    this.endExternalUI();
+    if (!html) return;
+
+    this._applyEdit(() => document.execCommand('insertHTML', false, html));
+    this._updateToolbarState();
+  }
+
+  /** Current values handed to the resolver, mirroring the popup's pre-filled fields. */
+  _resolverContext(id) {
+    switch (id) {
+      case 'image': return { src: '', alt: '', width: '', selection: this._selectedText() };
+      case 'video': return { url: '', selection: this._selectedText() };
+      case 'embed': return { html: '', selection: this._selectedText() };
+      case 'link':  return this._linkContext();
+      default:      return { selection: this._selectedText() };
+    }
+  }
+
+  /**
+   * Link context doubles as edit mode: when the caret sits in an <a>, the whole
+   * anchor is selected first so whatever the host returns replaces it — the same
+   * outcome as the popup's in-place mutation, but robust to the host re-rendering.
+   */
+  _linkContext() {
+    const anchor = this._anchorInSelection();
+    if (!anchor) {
+      const text = this._selectedText();
+      return { href: '', text, title: '', target: '', selection: text, isEdit: false };
+    }
+
+    const sel = window.getSelection();
+    if (sel) {
+      const r = document.createRange();
+      r.selectNode(anchor);
+      sel.removeAllRanges();
+      sel.addRange(r);
+    }
+    return {
+      href:      anchor.getAttribute('href')   || '',
+      text:      anchor.textContent            || '',
+      title:     anchor.getAttribute('title')  || '',
+      target:    anchor.getAttribute('target') || '',
+      selection: anchor.textContent            || '',
+      isEdit:    true,
+    };
+  }
+
+  /** Normalises a resolver result (object or bare string) into insertable HTML. */
+  _resolvedHTML(id, result, ctx) {
+    switch (id) {
+      case 'image': {
+        const r   = typeof result === 'string' ? { src: result } : result;
+        const src = String(r.src || r.url || '').trim();
+        return src ? this._imageHTML({ ...r, src }) : null;
+      }
+      case 'link': {
+        const r    = typeof result === 'string' ? { href: result } : result;
+        const href = String(r.href || r.url || '').trim();
+        if (!href) return null;
+        const text = String(r.text != null ? r.text : (ctx.text || '')).trim();
+        return this._linkHTML({ ...r, href, text });
+      }
+      case 'video': {
+        const r  = typeof result === 'string' ? { url: result } : result;
+        const id = r.id ? String(r.id).trim() : this._ytId(String(r.url || '').trim());
+        return id ? this._videoHTML(id) : null;
+      }
+      case 'embed': {
+        const html = String(typeof result === 'string' ? result : (result.html || '')).trim();
+        return html ? this._embedHTML(html) : null;
+      }
+      default:
+        return null;
+    }
+  }
+
+  /** Text of the current selection, '' when it is collapsed or outside the editor. */
+  _selectedText() {
+    const sel = window.getSelection();
+    if (!sel || !sel.rangeCount) return '';
+    return this._editor.contains(sel.getRangeAt(0).commonAncestorContainer) ? sel.toString() : '';
+  }
+
+  /** Nearest <a> ancestor of the caret, or null when the caret is elsewhere. */
+  _anchorInSelection() {
+    const sel = window.getSelection();
+    if (!sel || !sel.rangeCount) return null;
+    let node = sel.anchorNode;
+    if (!node || !this._editor.contains(node)) return null;
+    while (node && node !== this._editor) {
+      if (node.nodeName === 'A') return node;
+      node = node.parentNode;
+    }
+    return null;
   }
 
   // ─── Status bar ───────────────────────────────────────────────────────────
@@ -1005,23 +1162,39 @@ class JotterJS {
         }
       });
       this._updateStatus();
-      this._emit('change', this.getHTML());
-      if (this._options.onChange) this._options.onChange(this.getHTML());
+      this._emitChange();
     });
 
     this._editor.addEventListener('keyup',   () => this._updateToolbarState());
     this._editor.addEventListener('mouseup', () => this._updateToolbarState());
 
-    this._editor.addEventListener('focus', () => {
+    // focusin/focusout rather than focus/blur: they carry relatedTarget, which is
+    // what tells "the user left the editor" apart from "the user moved into the
+    // editor's own chrome". The popup lives on document.body, so clicking its URL
+    // field blurs the contenteditable — hosts that save on blur would then
+    // re-render and remount the editor out from under their own open popup.
+    this._editor.addEventListener('focusin', e => {
       this._root.classList.add('jotter--focused');
+      if (this._externalDepth > 0) return;          // caret restored by endExternalUI
+      if (this._isInternalTarget(e.relatedTarget)) return;
       this._emit('focus');
       if (this._options.onFocus) this._options.onFocus();
     });
 
-    this._editor.addEventListener('blur', () => {
-      this._root.classList.remove('jotter--focused');
-      this._emit('blur');
-      if (this._options.onBlur) this._options.onBlur();
+    this._editor.addEventListener('focusout', e => {
+      if (this._externalDepth > 0) return;          // host UI has the floor
+      if (this._isInternalTarget(e.relatedTarget)) return;
+      // relatedTarget is null whenever focus lands on something unfocusable —
+      // popup chrome, a label, the page background — so settle a tick and look
+      // at where focus actually ended up before declaring a blur.
+      setTimeout(() => {
+        if (this._destroyed || this._externalDepth > 0) return;
+        if (this._isInternalTarget(document.activeElement)) return;
+        if (this._popupVisible()) return;
+        this._root.classList.remove('jotter--focused');
+        this._emit('blur');
+        if (this._options.onBlur) this._options.onBlur();
+      }, 0);
     });
 
     this._editor.addEventListener('keydown', e => {
@@ -1031,22 +1204,30 @@ class JotterJS {
       }
     });
 
-    // Close popup on outside click
-    document.addEventListener('mousedown', e => {
-      if (this._popup.classList.contains('jotter-popup--visible') &&
+    // Close popup on outside click — the caret bookmark goes with it, since the
+    // click has already moved the caret somewhere the user chose.
+    this._onDocMouseDown = e => {
+      if (this._popupVisible() &&
           !this._popup.contains(e.target) &&
           !this._toolbarEl.contains(e.target)) {
         this._hidePopup();
       }
-    });
+    };
+    document.addEventListener('mousedown', this._onDocMouseDown);
 
-    // Close popup on Escape
-    document.addEventListener('keydown', e => {
-      if (e.key === 'Escape' && this._popup.classList.contains('jotter-popup--visible')) {
+    // Close popup on Escape, putting the caret back where it was
+    this._onDocKeyDown = e => {
+      if (e.key === 'Escape' && this._popupVisible()) {
+        this._restoreSavedBookmark();
         this._hidePopup();
-        this._editor.focus();
       }
-    });
+    };
+    document.addEventListener('keydown', this._onDocKeyDown);
+  }
+
+  /** True when a node lives inside the editor's own chrome (root or body-level popup). */
+  _isInternalTarget(node) {
+    return !!node && (this._root.contains(node) || this._popup.contains(node));
   }
 
   // ─── Custom commands ──────────────────────────────────────────────────────
@@ -1060,7 +1241,9 @@ class JotterJS {
     this._sourceMode = !this._sourceMode;
 
     if (this._sourceMode) {
-      this._source.value = this._prettyHTML(this._editor.innerHTML);
+      // Outstanding bookmarks cannot survive the round-trip through the textarea.
+      this._dropBookmarks();
+      this._source.value = this._prettyHTML(this._richHTML());
       this._editor.style.display = 'none';
       this._source.style.display = 'block';
     } else {
@@ -1068,8 +1251,7 @@ class JotterJS {
       this._source.style.display = 'none';
       this._editor.style.display = '';
       this._updateStatus();
-      this._emit('change', this.getHTML());
-      if (this._options.onChange) this._options.onChange(this.getHTML());
+      this._emitChange();
     }
 
     this._root.classList.toggle('jotter--source-mode', this._sourceMode);
@@ -1118,6 +1300,8 @@ class JotterJS {
   _sanitize(html) {
     const doc = new DOMParser().parseFromString(html, 'text/html');
     doc.querySelectorAll('script').forEach(el => el.remove());
+    // Selection markers are internal bookkeeping; never let them back in.
+    doc.querySelectorAll('[data-jotter-bookmark]').forEach(el => el.remove());
     doc.querySelectorAll('*').forEach(el => {
       Array.from(el.attributes).forEach(attr => {
         if (attr.name.startsWith('on')) {
@@ -1235,53 +1419,250 @@ class JotterJS {
     this._charCountEl.textContent = `${chars} char${chars !== 1 ? 's' : ''}`;
   }
 
-  /** Clones current selection range before a toolbar interaction steals focus. */
-  _saveRange() {
-    const sel = window.getSelection();
-    return (sel && sel.rangeCount > 0) ? sel.getRangeAt(0).cloneRange() : null;
+  // ─── Selection bookmarks ──────────────────────────────────────────────────
+  // Toolbar interactions and host UI both need the caret to survive losing
+  // focus. A cloned Range does not: it goes stale the moment the DOM around it
+  // mutates, which is exactly what happens during an upload with a progress
+  // indicator or a host re-render. Empty marker <span>s move with the DOM
+  // instead, so they still point at the right spot afterwards. They are stripped
+  // from getHTML() and from _sanitize(), so hosts never see them.
+
+  /** Editable area's HTML, minus any live selection markers. */
+  _richHTML() {
+    if (this._bookmarks.size === 0) return this._editor.innerHTML;
+    const clone = this._editor.cloneNode(true);
+    clone.querySelectorAll('[data-jotter-bookmark]').forEach(el => el.remove());
+    return clone.innerHTML;
   }
 
-  /** Restores a previously saved range so execCommand targets the original selection. */
-  _restoreRange(range) {
-    if (!range) return;
-    const sel = window.getSelection();
-    sel.removeAllRanges();
-    sel.addRange(range);
+  _makeMarker(id) {
+    const el = document.createElement('span');
+    el.className = 'jotter-bookmark';
+    el.dataset.jotterBookmark = id;
+    return el;
+  }
+
+  /**
+   * Turns a bookmark back into a Range and takes it out of circulation:
+   * markers are removed and the token is forgotten. Returns null when the token
+   * is unknown or its markers were wiped out (setHTML, host re-render).
+   */
+  _takeRange(token) {
+    const rec = token != null ? this._bookmarks.get(token) : null;
+    if (!rec) return null;
+    this._bookmarks.delete(token);
+
+    if (rec.atStart) {
+      const range = document.createRange();
+      range.setStart(this._editor, 0);
+      range.collapse(true);
+      return range;
+    }
+
+    const { start, end } = rec;
+    const live = this._editor.contains(start) && (!end || this._editor.contains(end));
+
+    // Ranges track node removal, so anchoring after/before the markers and then
+    // removing them leaves the boundaries exactly where the markers sat.
+    let range = null;
+    if (live) {
+      range = document.createRange();
+      range.setStartAfter(start);
+      if (end) range.setEndBefore(end); else range.collapse(true);
+    }
+    if (start.parentNode) start.remove();
+    if (end && end.parentNode) end.remove();
+    return range;
+  }
+
+  /** Bookmarks the caret for the current toolbar interaction, dropping any previous one. */
+  _saveBookmark() {
+    this._releaseSavedBookmark();
+    this._savedBookmark = this.saveSelection();
+  }
+
+  /** Puts the caret back where the toolbar interaction started and focuses the editor. */
+  _restoreSavedBookmark() {
+    this.restoreSelection(this._savedBookmark);
+    this._savedBookmark = null;
+    this._editor.focus();
+  }
+
+  _releaseSavedBookmark() {
+    this.releaseSelection(this._savedBookmark);
+    this._savedBookmark = null;
+  }
+
+  /** Drops every outstanding bookmark — for operations that replace the content wholesale. */
+  _dropBookmarks() {
+    Array.from(this._bookmarks.keys()).forEach(token => this.releaseSelection(token));
+    this._savedBookmark = null;
   }
 
   _emit(event, data) {
     (this._listeners[event] || []).forEach(fn => fn(data));
   }
 
+  /** Single funnel for content-change notification, so 'change' and onChange never drift. */
+  _emitChange() {
+    const html = this.getHTML();
+    this._changeCount++;
+    this._emit('change', html);
+    if (this._options.onChange) this._options.onChange(html);
+  }
+
+  /**
+   * Runs an edit and reports it exactly once.
+   *
+   * execCommand fires `input` on the editable, and that handler already emits —
+   * so emitting again here would double-notify, while an edit made straight
+   * through the DOM (the link popup's in-place update) emits nothing at all.
+   * Both matter: hosts that save on change re-render, and a re-render mid-edit
+   * remounts the editor. So: emit only if the edit changed something and
+   * nothing else has spoken for it.
+   */
+  _applyEdit(fn) {
+    const emits  = this._changeCount;
+    const before = this._richHTML();
+    fn();
+    this._updateStatus();
+    if (this._changeCount === emits && this._richHTML() !== before) this._emitChange();
+  }
+
   // ─── Public API ─────────────────────────────────────────────────────────
   // See class-level JSDoc for full method signatures.
 
-  getHTML()      { return this._sourceMode ? this._source.value : this._editor.innerHTML; }
+  getHTML()      { return this._sourceMode ? this._source.value : this._richHTML(); }
   getText()      { return this._editor.innerText; }
   isSourceMode() { return this._sourceMode; }
   toggleSource() { this._toggleSourceMode(); return this; }
-  clear()    { this._editor.innerHTML = ''; this._updateStatus(); return this; }
+  clear()    { this._dropBookmarks(); this._editor.innerHTML = ''; this._updateStatus(); return this; }
   focus()    { this._editor.focus(); return this; }
 
-  insertHTML(html) {
+  /**
+   * @param {string} html
+   * @param {object} [opts]
+   * @param {*}      [opts.at]  Bookmark from saveSelection(); insert there instead
+   *                            of at the current caret. The bookmark is consumed.
+   */
+  insertHTML(html, opts = {}) {
+    if (opts.at != null) this.restoreSelection(opts.at);
     this._editor.focus();
-    document.execCommand('insertHTML', false, this._sanitize(html));
-    this._updateStatus();
-    this._emit('change', this.getHTML());
-    if (this._options.onChange) this._options.onChange(this.getHTML());
+    this._applyEdit(() => document.execCommand('insertHTML', false, this._sanitize(html)));
     return this;
   }
 
-  insertText(text) {
+  /** @param {object} [opts] @param {*} [opts.at] Bookmark to insert at; consumed. */
+  insertText(text, opts = {}) {
+    if (opts.at != null) this.restoreSelection(opts.at);
     this._editor.focus();
-    document.execCommand('insertText', false, text);
-    this._updateStatus();
-    this._emit('change', this.getHTML());
-    if (this._options.onChange) this._options.onChange(this.getHTML());
+    this._applyEdit(() => document.execCommand('insertText', false, text));
+    return this;
+  }
+
+  /**
+   * Bookmarks the current selection and returns an opaque token, or null when
+   * the selection is not inside this editor. The token survives DOM mutation
+   * between save and restore — uploads, progress indicators, host re-renders.
+   * Every token must be handed to restoreSelection() or releaseSelection()
+   * exactly once; both consume it.
+   *
+   * @returns {string|null}
+   */
+  saveSelection() {
+    const sel = window.getSelection();
+    if (!sel || sel.rangeCount === 0) return null;
+
+    const range = sel.getRangeAt(0);
+    if (!this._editor.contains(range.startContainer) ||
+        !this._editor.contains(range.endContainer)) return null;
+
+    const token = 'jbm' + (++this._bmSeq);
+
+    // Nothing to anchor to in an empty editor — and injecting a marker would
+    // break :empty, hiding the placeholder while host UI is open.
+    if (this._editor.childNodes.length === 0) {
+      this._bookmarks.set(token, { atStart: true });
+      return token;
+    }
+
+    // End marker first: splitting a text node at the end boundary leaves the
+    // earlier start boundary untouched, but not the other way round.
+    const start = this._makeMarker(token);
+    const end   = range.collapsed ? null : this._makeMarker(token);
+    if (end) {
+      const r = range.cloneRange();
+      r.collapse(false);
+      r.insertNode(end);
+    }
+    const r0 = range.cloneRange();
+    r0.collapse(true);
+    r0.insertNode(start);
+
+    this._bookmarks.set(token, { start, end });
+
+    // Re-select between the markers so the visible selection is unchanged.
+    const live = document.createRange();
+    live.setStartAfter(start);
+    if (end) live.setEndBefore(end); else live.collapse(true);
+    sel.removeAllRanges();
+    sel.addRange(live);
+
+    return token;
+  }
+
+  /** Restores (and consumes) a saveSelection() token; no-op for null/stale tokens. */
+  restoreSelection(token) {
+    const range = this._takeRange(token);
+    if (!range) return this;
+    if (!this._sourceMode) this._editor.focus();
+    const sel = window.getSelection();
+    sel.removeAllRanges();
+    sel.addRange(range);
+    return this;
+  }
+
+  /** Consumes a saveSelection() token without moving the caret. */
+  releaseSelection(token) {
+    this._takeRange(token);
+    return this;
+  }
+
+  /**
+   * Declares that host UI (a modal, an asset picker) is taking over. Bookmarks
+   * the caret and suppresses focus/blur emission until endExternalUI(), so a
+   * save-on-blur host cannot re-render — and remount the editor — while its own
+   * modal is still open. Calls nest.
+   */
+  beginExternalUI() {
+    if (this._externalDepth === 0) this._externalBookmark = this.saveSelection();
+    this._externalDepth++;
+    return this;
+  }
+
+  /**
+   * Hands control back: restores the caret bookmarked by beginExternalUI() and
+   * resumes focus/blur emission. Call it after the host UI has closed, so the
+   * focus it takes back is not stolen again.
+   *
+   * @param {object}  [opts]
+   * @param {boolean} [opts.restore=true]  false to drop the caret instead.
+   */
+  endExternalUI(opts = {}) {
+    if (this._externalDepth === 0) return this;
+    if (this._externalDepth === 1) {
+      const token = this._externalBookmark;
+      this._externalBookmark = null;
+      // Still inside the suppression window, so restoring focus here stays silent.
+      if (opts.restore === false) this.releaseSelection(token);
+      else this.restoreSelection(token);
+    }
+    this._externalDepth--;
     return this;
   }
 
   setHTML(html) {
+    this._dropBookmarks();
     this._editor.innerHTML = this._sanitize(html);
     this._updateStatus();
     return this;
@@ -1317,7 +1698,13 @@ class JotterJS {
   /** Unmounts editor, restores original element innerHTML, removes body popup, clears listeners. */
   destroy() {
     const html = this.getHTML();
+    this._destroyed = true;
     this._hidePopup();
+    this._dropBookmarks();
+    this._externalBookmark = null;
+    this._externalDepth = 0;
+    document.removeEventListener('mousedown', this._onDocMouseDown);
+    document.removeEventListener('keydown', this._onDocKeyDown);
     if (this._popup.parentNode) this._popup.parentNode.removeChild(this._popup);
     this._target.classList.remove('jotter-host');
     this._target.innerHTML = html;

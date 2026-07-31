@@ -1,6 +1,6 @@
 {
   "name": "jotterjs",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "A lightweight, vanilla JS rich-text editor component. No dependencies.",
   "main": "dist/jotter.min.js",
   "module": "dist/jotter.js",

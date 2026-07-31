@@ -233,6 +233,12 @@
   font-style: italic;
 }
 
+/* Selection bookmarks (saveSelection): empty spans marking a caret across a
+   focus loss. Hidden so they never take a caret, a click or a line box. */
+.jotter-editor .jotter-bookmark {
+  display: none;
+}
+
 /* ── Editor typography ──────────────────────────────────────────────────────
    Structural rules only (size, weight, spacing, resets).
    No colours or custom fonts — those come exclusively from themes below.    */
