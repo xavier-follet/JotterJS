@@ -9,7 +9,7 @@ A lightweight, vanilla JS rich-text editor component built on `contenteditable`.
 - Lists, indentation, alignment, tables, links, and image insertion
 - Source (raw HTML) toggle
 - Content themes: `default`, `warm`, `ink`, `forest`
-- Pre-built toolbar presets (`minimal`, `writing`) and fully custom toolbar support
+- Pre-built toolbar presets (`minimal`, `writing`, `full`) and fully custom toolbar support
 - Custom toolbar buttons with `onClick` callbacks
 - Event system (`change`, `focus`, `blur`)
 - Simple chainable API
@@ -84,9 +84,31 @@ Methods return `this` for chaining (except `getHTML`, `getText`, `isSourceMode`,
 ```js
 new JotterJS('#el', { toolbar: JotterJS.presets.minimal });
 new JotterJS('#el', { toolbar: JotterJS.presets.writing });
+new JotterJS('#el', { toolbar: JotterJS.presets.full });    // the default toolbar
+```
+
+Every preset is composed from `JotterJS.actions`, so a given command has the
+same icon and tooltip whichever toolbar it appears in. Extend one by spreading:
+
+```js
+new JotterJS('#el', {
+  toolbar: [
+    ...JotterJS.presets.minimal,
+    JotterJS.actions.sep,
+    JotterJS.actions.image,
+  ],
+});
 ```
 
 ## Custom Toolbar
+
+Action descriptors and preset arrays are frozen and shared between presets, so
+customise by copying rather than mutating in place:
+
+```js
+{ ...JotterJS.actions.image, onClick: fn }   // ✓
+JotterJS.actions.image.onClick = fn          // ✗ throws — would leak everywhere
+```
 
 ```js
 const { actions } = JotterJS;
