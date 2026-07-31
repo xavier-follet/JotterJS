@@ -196,6 +196,35 @@
       <div id="editor-custom" style="margin-top:12px"></div>
     </section>
 
+    <!-- ── 5. Host-owned insert dialog ────────────────────────────────── -->
+    <section>
+      <h2>Host-owned insert dialog — onRequestImage</h2>
+      <div class="code">new JotterJS('#el', {
+        onRequestImage: async () => await myAssetLibrary.pick(), // null = cancelled
+        })</div>
+      <p style="margin:10px 0; color:#9a9488">
+        Put the caret mid-sentence, hit the image button, wait, then pick. The picker
+        takes focus and the editor is mutated behind its back — the image still lands
+        at the caret, and <code>onBlur</code> stays quiet the whole time.
+      </p>
+      <div id="editor-resolver"></div>
+      <div class="controls" style="margin-top:12px">
+        <div class="output" id="out-resolver">blur events: 0</div>
+      </div>
+    </section>
+
+  </div>
+
+  <!-- Stand-in for a host asset library: focus-trapping, slow, and re-entrant -->
+  <div id="picker" hidden style="position:fixed; inset:0; background:rgba(30,28,24,.4); display:grid; place-items:center; z-index:99">
+    <div style="background:#fff; border:1px solid #d8d4cc; border-radius:6px; padding:20px; width:320px; display:flex; flex-direction:column; gap:10px">
+      <strong style="font-size:12px">Asset library</strong>
+      <input id="picker-input" placeholder="https://…/photo.jpg" style="padding:8px; border:1px solid #d8d4cc; border-radius:4px; font:inherit" />
+      <div class="controls">
+        <button id="picker-ok">Insert</button>
+        <button id="picker-cancel">Cancel</button>
+      </div>
+    </div>
   </div>
 
   <script type="module">
@@ -246,6 +275,40 @@
         },
       ],
     });
+
+    // 5 — host-owned insert dialog via onRequestImage
+    const picker      = document.getElementById('picker');
+    const pickerInput = document.getElementById('picker-input');
+
+    /** Opens the modal, steals focus, and resolves with a src (or null on cancel). */
+    function pickAsset() {
+      picker.hidden = false;
+      pickerInput.value = '';
+      pickerInput.focus();               // focus trap — the editor blurs right here
+      return new Promise(resolve => {
+        const done = (value) => {
+          picker.hidden = true;
+          document.getElementById('picker-ok').onclick = null;
+          document.getElementById('picker-cancel').onclick = null;
+          resolve(value);
+        };
+        document.getElementById('picker-ok').onclick = () => done(pickerInput.value.trim() || null);
+        document.getElementById('picker-cancel').onclick = () => done(null);
+      });
+    }
+
+    let blurs = 0;
+    const out = document.getElementById('out-resolver');
+    new JotterJS('#editor-resolver', {
+      height: '160px',
+      toolbar: [actions.bold, actions.italic, actions.sep, actions.image, actions.link],
+      onBlur: () => { out.textContent = `blur events: ${++blurs}`; },
+      onRequestImage: async () => {
+        const src = await pickAsset();
+        if (!src) return null;
+        return { src, alt: 'From the asset library', width: '320px' };
+      },
+    }).setHTML('<p>Put the caret somewhere in the middle of this sentence, then insert an image.</p>');
   </script>
 </body>
 

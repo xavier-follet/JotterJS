@@ -11,6 +11,8 @@ A lightweight, vanilla JS rich-text editor component built on `contenteditable`.
 - Content themes: `default`, `warm`, `ink`, `forest`
 - Pre-built toolbar presets (`minimal`, `writing`, `full`) and fully custom toolbar support
 - Custom toolbar buttons with `onClick` callbacks
+- Replaceable insert dialogs — swap the built-in image/link/video/embed popups for your own UI
+- Selection bookmarks that survive async host UI and DOM mutation
 - Event system (`change`, `focus`, `blur`)
 - Simple chainable API
 
@@ -57,6 +59,14 @@ const editor = new JotterJS('#my-editor', {
 | `onChange`    | `Function` | —                | Callback `(html)` fired on every content change  |
 | `onFocus`     | `Function` | —                | Callback fired on editor focus                   |
 | `onBlur`      | `Function` | —                | Callback fired on editor blur                    |
+| `onRequestImage` | `Function` | —             | Replaces the Insert Image popup — see [Replacing a built-in popup](#replacing-a-built-in-popup) |
+| `onRequestLink`  | `Function` | —             | Replaces the Insert Link popup                   |
+| `onRequestVideo` | `Function` | —             | Replaces the Insert Video popup                  |
+| `onRequestEmbed` | `Function` | —             | Replaces the Insert Embed popup                  |
+
+`change` fires once per edit. `focus` and `blur` describe the editor as a whole:
+moving into the editor's own popup is not a blur, and neither is host UI opened
+between `beginExternalUI()` and `endExternalUI()`.
 
 ## API
 
@@ -75,9 +85,19 @@ editor.isSourceMode()     // → boolean
 editor.on(event, fn)      // subscribe to 'change' | 'focus' | 'blur'
 editor.off(event, fn)     // unsubscribe
 editor.destroy()          // unmount and return final HTML
+
+// Working across async host UI
+editor.saveSelection()          // → token — bookmark the caret
+editor.restoreSelection(token)  // put the caret back (consumes the token)
+editor.releaseSelection(token)  // discard a bookmark instead
+editor.insertHTML(html, { at: token })   // restore, then insert
+editor.insertText(text, { at: token })
+editor.beginExternalUI()        // your UI is taking over: hold the caret, hush focus/blur
+editor.endExternalUI()          // your UI is done: caret back, events resume
 ```
 
-Methods return `this` for chaining (except `getHTML`, `getText`, `isSourceMode`, and `destroy`).
+Methods return `this` for chaining (except `getHTML`, `getText`, `saveSelection`,
+`isSourceMode`, and `destroy`).
 
 ## Toolbar Presets
 
@@ -132,12 +152,101 @@ new JotterJS('#el', {
 });
 ```
 
+## Replacing a built-in popup
+
+The insert dialogs are defaults, not fixtures. An app with its own asset library
+wants "pick from files uploaded to this course", not a URL field. There are two
+ways in, depending on how much you want to own.
+
+### Resolver hooks — keep the button, replace the dialog
+
+Pass an `onRequest*` option and the toolbar button awaits it instead of opening
+the popup. You answer *which image*; the editor still bookmarks the caret,
+restores it afterwards, builds the markup and emits `change`:
+
+```js
+new JotterJS('#el', {
+  onRequestImage: async ({ src, alt, width }) => {
+    const file = await myAssetLibrary.pick();   // your modal, focus trap and all
+    if (!file) return null;                     // null (or a throw) = cancelled
+    return { src: file.url, alt: file.title, width: '480px' };
+  },
+});
+```
+
+| Hook             | Receives                                          | Return                                        |
+|------------------|---------------------------------------------------|-----------------------------------------------|
+| `onRequestImage` | `{ src, alt, width, selection }`                  | `{ src, alt, width }` or a `src` string        |
+| `onRequestLink`  | `{ href, text, title, target, selection, isEdit }`| `{ href, text, title, target }` or an `href` string |
+| `onRequestVideo` | `{ url, selection }`                              | `{ url }` / `{ id }` or a URL string           |
+| `onRequestEmbed` | `{ html, selection }`                             | `{ html }` or an HTML string                   |
+
+`onRequestLink` doubles as edit mode: when the caret sits inside an `<a>`, the
+context arrives pre-filled with `isEdit: true`, and what you return replaces that
+anchor. Take as long as you like — an upload with a progress bar, a re-render,
+anything: the insertion point is bookmarked, not merely remembered.
+
+### `onClick` — replace the button outright
+
+`onClick` outranks everything else on a descriptor, popup actions included:
+
+```js
+const { actions } = JotterJS;
+
+new JotterJS('#el', {
+  toolbar: [
+    actions.bold, actions.italic, actions.sep,
+    { ...actions.image, onClick: (editor) => openMyPicker(editor) },
+  ],
+});
+```
+
+You now own the whole interaction, including the caret. Wrap the async part so
+the editor knows host UI has the floor:
+
+```js
+async function openMyPicker(editor) {
+  editor.beginExternalUI();          // hold the caret, stop emitting focus/blur
+  try {
+    const file = await myAssetLibrary.pick();
+    editor.endExternalUI();          // caret comes back before we insert
+    if (file) editor.insertHTML(`<img src="${file.url}" alt="">`);
+  } catch (err) {
+    editor.endExternalUI();
+  }
+}
+```
+
+Or bookmark explicitly, if the caret must outlive several steps:
+
+```js
+const bookmark = editor.saveSelection();
+const file = await upload(blob);                    // DOM churns meanwhile
+editor.insertHTML(`<img src="${file.url}">`, { at: bookmark });
+```
+
+Bookmarks are marker nodes, not cloned ranges, so they still point at the right
+spot after the surrounding DOM has changed. Each token is consumed exactly once —
+by `restoreSelection`, by `insertHTML(..., { at })`, or by `releaseSelection` if
+the user cancels. They never appear in `getHTML()`.
+
+### Why `beginExternalUI` matters
+
+A `contenteditable` blurs the moment your modal takes focus. Hosts that save on
+blur then re-render, and a re-render remounts the editor — with your modal still
+open on top of it. Between `beginExternalUI()` and `endExternalUI()`, `blur` and
+`focus` are not emitted, so that chain never starts. The `onRequest*` hooks wrap
+this for you.
+
 ## Development
 
 ```bash
 npm run dev    # start dev server
 npm run build  # build to dist/
 ```
+
+`test/index.html` is the manual playground; `test/spec.html` is a self-checking
+behaviour spec — open it and read the pass/fail list.
 
 ## License
 

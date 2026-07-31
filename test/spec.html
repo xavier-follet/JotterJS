@@ -1,0 +1,538 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8" />
+  <title>JotterJS — spec</title>
+  <link rel="stylesheet" href="../src/jotter.css" />
+  <style>
+    body { font-family: ui-monospace, monospace; font-size: 13px; padding: 24px; background: #f8f7f4; color: #1e1c18; }
+    h1 { font-size: 15px; margin-bottom: 16px; }
+    #summary { font-weight: 700; margin-bottom: 12px; }
+    .t { padding: 3px 0; }
+    .t.pass::before { content: 'PASS  '; color: #3a6030; }
+    .t.fail::before { content: 'FAIL  '; color: #8a3a3a; }
+    .t.fail { color: #8a3a3a; }
+    .why { color: #9a9488; padding-left: 6ch; white-space: pre-wrap; }
+    #sandbox { position: absolute; left: -9999px; top: 0; width: 600px; }
+  </style>
+</head>
+
+<body>
+  <h1>JotterJS — behaviour spec</h1>
+  <div id="summary">running…</div>
+  <div id="results"></div>
+  <input id="outside" aria-label="outside the editor" />
+  <div id="sandbox"></div>
+
+  <script type="module">
+    import JotterJS from '../src/jotter.js';
+
+    // ─── Tiny harness ──────────────────────────────────────────────────────
+    const results = document.getElementById('results');
+    let passed = 0, failed = 0;
+
+    const tick = (ms = 0) => new Promise(r => setTimeout(r, ms));
+    // Timer rather than rAF: headless runs have no compositor driving frames.
+    const settle = () => tick(16);
+
+    async function test(name, fn) {
+      const row = document.createElement('div');
+      row.className = 't';
+      try {
+        await fn();
+        row.classList.add('pass');
+        row.textContent = name;
+        passed++;
+      } catch (err) {
+        row.classList.add('fail');
+        row.textContent = name;
+        const why = document.createElement('div');
+        why.className = 'why';
+        why.textContent = err && err.message ? err.message : String(err);
+        row.appendChild(why);
+        failed++;
+      }
+      results.appendChild(row);
+    }
+
+    function assert(cond, msg) {
+      if (!cond) throw new Error(msg || 'assertion failed');
+    }
+    function eq(actual, expected, msg) {
+      if (actual !== expected) {
+        throw new Error(`${msg || 'not equal'}\n  expected: ${expected}\n  actual:   ${actual}`);
+      }
+    }
+
+    /**
+     * Compares markup modulo two browser artefacts we do not control:
+     * execCommand hardens spaces next to inserted nodes into &nbsp;, and the
+     * source-view pretty-printer re-indents on the way back.
+     */
+    function eqHTML(actual, expected, msg) {
+      const norm = s => s.replace(/&nbsp;| /g, ' ').replace(/\s*\n\s*/g, '');
+      eq(norm(actual), norm(expected), msg);
+    }
+
+    // ─── Fixtures ──────────────────────────────────────────────────────────
+    const sandbox = document.getElementById('sandbox');
+    const editors = [];
+
+    function mount(options = {}, html = '<p>Hello world</p>') {
+      const host = document.createElement('div');
+      sandbox.appendChild(host);
+      const ed = new JotterJS(host, Object.assign({ height: '80px' }, options));
+      ed.setHTML(html);
+      editors.push(ed);
+      return { ed, host };
+    }
+
+    const editorEl = host => host.querySelector('.jotter-editor');
+    const btn = (host, title) =>
+      Array.from(host.querySelectorAll('.jotter-toolbar button'))
+        .find(b => b.title === title);
+    const popupOf = ed => document.querySelector('.jotter-popup.jotter-popup--visible');
+
+    function mousedown(el) {
+      el.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true }));
+    }
+
+    /** Puts a collapsed caret inside the first text node of the first <p>. */
+    function caretAt(host, offset) {
+      const node = editorEl(host).querySelector('p').firstChild;
+      const r = document.createRange();
+      r.setStart(node, offset);
+      r.collapse(true);
+      const sel = window.getSelection();
+      sel.removeAllRanges();
+      sel.addRange(r);
+      editorEl(host).focus();
+      return node;
+    }
+
+    function selectRange(host, from, to) {
+      const node = editorEl(host).querySelector('p').firstChild;
+      const r = document.createRange();
+      r.setStart(node, from);
+      r.setEnd(node, to);
+      const sel = window.getSelection();
+      sel.removeAllRanges();
+      sel.addRange(r);
+      editorEl(host).focus();
+      return node;
+    }
+
+    // ─── Layer 1 — onClick outranks type ───────────────────────────────────
+
+    await test('onClick on a popup action runs the callback', async () => {
+      let calls = 0;
+      const { host } = mount({
+        toolbar: [{ ...JotterJS.actions.image, onClick: () => calls++ }],
+      });
+      mousedown(btn(host, 'Insert Image'));
+      eq(calls, 1, 'callback not invoked');
+    });
+
+    await test('onClick on a popup action does not open the built-in popup', async () => {
+      const { host } = mount({
+        toolbar: [{ ...JotterJS.actions.image, onClick: () => {} }],
+      });
+      mousedown(btn(host, 'Insert Image'));
+      await settle();
+      assert(!popupOf(), 'popup opened anyway');
+    });
+
+    await test('onClick receives the editor instance', async () => {
+      let got = null;
+      const { ed, host } = mount({
+        toolbar: [{ ...JotterJS.actions.link, onClick: e => { got = e; } }],
+      });
+      mousedown(btn(host, 'Insert Link'));
+      assert(got === ed, 'callback did not receive the editor');
+    });
+
+    await test('a popup action without onClick still opens its popup', async () => {
+      const { host } = mount({ toolbar: [JotterJS.actions.image] });
+      mousedown(btn(host, 'Insert Image'));
+      await settle();
+      assert(popupOf(), 'popup did not open');
+      document.body.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
+    });
+
+    // ─── Layer 2 — selection bookmarks ─────────────────────────────────────
+
+    await test('saveSelection returns null when the caret is outside the editor', async () => {
+      mount();
+      document.getElementById('outside').focus();
+      const sel = window.getSelection();
+      sel.removeAllRanges();
+      eq(editors[editors.length - 1].saveSelection(), null, 'expected null token');
+    });
+
+    await test('restoreSelection puts a collapsed caret back', async () => {
+      const { ed, host } = mount();
+      caretAt(host, 5);
+      const bm = ed.saveSelection();
+      document.getElementById('outside').focus();
+      ed.restoreSelection(bm);
+      ed.insertText('!');
+      eqHTML(ed.getHTML(), '<p>Hello! world</p>', 'caret came back in the wrong place');
+    });
+
+    await test('a bookmark survives DOM mutation around it', async () => {
+      const { ed, host } = mount();
+      caretAt(host, 5);
+      const bm = ed.saveSelection();
+      document.getElementById('outside').focus();
+      // What an upload progress indicator or a host re-render does to a Range:
+      editorEl(host).insertAdjacentHTML('afterbegin', '<p>Injected</p>');
+      ed.insertHTML('<b>X</b>', { at: bm });
+      eqHTML(ed.getHTML(), '<p>Injected</p><p>Hello<b>X</b> world</p>', 'insert landed off-target');
+    });
+
+    await test('a ranged bookmark restores the whole selection', async () => {
+      const { ed, host } = mount();
+      selectRange(host, 0, 5);
+      const bm = ed.saveSelection();
+      document.getElementById('outside').focus();
+      ed.insertText('Goodbye', { at: bm });
+      eqHTML(ed.getHTML(), '<p>Goodbye world</p>', 'selection was not replaced');
+    });
+
+    await test('getHTML never exposes bookmark markers', async () => {
+      const { ed, host } = mount();
+      selectRange(host, 0, 5);
+      const bm = ed.saveSelection();
+      eqHTML(ed.getHTML(), '<p>Hello world</p>', 'markers leaked into getHTML');
+      assert(editorEl(host).querySelector('.jotter-bookmark'), 'markers were never inserted');
+      ed.releaseSelection(bm);
+      assert(!editorEl(host).querySelector('.jotter-bookmark'), 'markers outlived their bookmark');
+    });
+
+    await test('releaseSelection drops the caret without moving it', async () => {
+      const { ed, host } = mount();
+      caretAt(host, 5);
+      const bm = ed.releaseSelection(ed.saveSelection());
+      ed.restoreSelection(bm);           // already consumed → no-op
+      eqHTML(ed.getHTML(), '<p>Hello world</p>', 'content changed unexpectedly');
+    });
+
+    await test('a bookmark wiped out by setHTML fails safe', async () => {
+      const { ed, host } = mount();
+      caretAt(host, 5);
+      const bm = ed.saveSelection();
+      ed.setHTML('<p>Replaced</p>');
+      ed.restoreSelection(bm);           // markers are gone — must not throw
+      eqHTML(ed.getHTML(), '<p>Replaced</p>', 'content changed unexpectedly');
+    });
+
+    // ─── Layer 3 — resolver hooks ──────────────────────────────────────────
+
+    await test('onRequestImage replaces the built-in popup', async () => {
+      let ctx = null;
+      const { ed, host } = mount({
+        onRequestImage: async c => { ctx = c; await tick(20); return { src: 'a.png', alt: 'A' }; },
+      });
+      caretAt(host, 5);
+      mousedown(btn(host, 'Insert Image'));
+      await settle();
+      assert(!popupOf(), 'built-in popup opened');
+      await tick(60);
+      assert(ctx, 'resolver was never called');
+      eqHTML(ed.getHTML(),
+        '<p>Hello<img src="a.png" alt="A" style="max-width:100%"> world</p>',
+        'image landed off-target');
+    });
+
+    await test('an async resolver inserts at the caret it started from', async () => {
+      const { ed, host } = mount({
+        onRequestImage: async () => {
+          document.getElementById('outside').focus();          // modal steals focus
+          await tick(30);
+          editorEl(host).insertAdjacentHTML('afterbegin', '<p>Meanwhile</p>');  // host re-render
+          await tick(10);
+          return 'late.png';
+        },
+      });
+      caretAt(host, 5);
+      mousedown(btn(host, 'Insert Image'));
+      await tick(120);
+      eqHTML(ed.getHTML(),
+        '<p>Meanwhile</p><p>Hello<img src="late.png" alt="" style="max-width:100%"> world</p>',
+        'image landed off-target');
+    });
+
+    await test('a resolver returning null cancels without inserting', async () => {
+      const { ed, host } = mount({ onRequestImage: async () => null });
+      caretAt(host, 5);
+      mousedown(btn(host, 'Insert Image'));
+      await tick(40);
+      eqHTML(ed.getHTML(), '<p>Hello world</p>', 'something was inserted');
+    });
+
+    await test('a throwing resolver is treated as cancelled', async () => {
+      const { ed, host } = mount({ onRequestImage: async () => { throw new Error('nope'); } });
+      caretAt(host, 5);
+      mousedown(btn(host, 'Insert Image'));
+      await tick(40);
+      eqHTML(ed.getHTML(), '<p>Hello world</p>', 'something was inserted');
+    });
+
+    await test('onRequestLink hands over the link under the caret', async () => {
+      let ctx = null;
+      const { ed, host } = mount({
+        onRequestLink: async c => { ctx = c; return { href: '/page/2', text: 'Lesson 2' }; },
+      }, '<p>See <a href="/page/1" title="t">Lesson 1</a> now</p>');
+      const anchor = editorEl(host).querySelector('a');
+      const r = document.createRange();
+      r.setStart(anchor.firstChild, 2);
+      r.collapse(true);
+      const sel = window.getSelection();
+      sel.removeAllRanges();
+      sel.addRange(r);
+      editorEl(host).focus();
+
+      mousedown(btn(host, 'Insert Link'));
+      await tick(40);
+      eq(ctx && ctx.href, '/page/1', 'existing href not passed to the resolver');
+      eq(ctx && ctx.isEdit, true, 'edit mode not reported');
+      eqHTML(ed.getHTML(), '<p>See <a href="/page/2">Lesson 2</a> now</p>', 'link not replaced in place');
+    });
+
+    await test('onRequestVideo accepts a bare URL string', async () => {
+      const { ed, host } = mount({
+        onRequestVideo: async () => 'https://youtu.be/dQw4w9WgXcQ',
+      });
+      caretAt(host, 11);
+      mousedown(btn(host, 'Insert YouTube Video'));
+      await tick(40);
+      assert(ed.getHTML().includes('youtube.com/embed/dQw4w9WgXcQ'), 'iframe not inserted');
+    });
+
+    await test('onRequestVideo rejects an id that is not a YouTube id', async () => {
+      const { ed, host } = mount({
+        onRequestVideo: async () => ({ id: '" onload="alert(1)' }),
+      });
+      caretAt(host, 11);
+      mousedown(btn(host, 'Insert YouTube Video'));
+      await tick(40);
+      eqHTML(ed.getHTML(), '<p>Hello world</p>', 'a malformed video id was inserted');
+    });
+
+    await test('resolver values are escaped into attributes', async () => {
+      const { ed, host } = mount({
+        onRequestImage: async () => ({ src: 'a.png"><scr' + 'ipt>x()</scr' + 'ipt><img src="b.png', alt: null }),
+      });
+      caretAt(host, 11);
+      mousedown(btn(host, 'Insert Image'));
+      await tick(40);
+      assert(!/<script/i.test(ed.getHTML()), 'markup broke out of the attribute');
+      assert(ed.getHTML().includes('alt=""'), 'a null alt leaked through: ' + ed.getHTML());
+    });
+
+    await test('onRequestEmbed inserts host markup verbatim', async () => {
+      const { ed, host } = mount({ onRequestEmbed: async () => ({ html: '<hr id="x">' }) });
+      caretAt(host, 11);
+      mousedown(btn(host, 'Insert Embed'));
+      await tick(40);
+      assert(ed.getHTML().includes('<hr id="x">'), 'embed not inserted verbatim');
+    });
+
+    await test('popups without a resolver are untouched', async () => {
+      const { host } = mount({ onRequestImage: async () => null });
+      mousedown(btn(host, 'Insert Table'));
+      await settle();
+      assert(popupOf(), 'table popup did not open');
+      document.body.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
+    });
+
+    // ─── Blur / focus containment ──────────────────────────────────────────
+
+    await test('clicking into a popup input does not emit blur', async () => {
+      let blurs = 0;
+      const { host } = mount({ onBlur: () => blurs++ });
+      caretAt(host, 5);
+      mousedown(btn(host, 'Insert Image'));
+      await settle();
+      const input = popupOf().querySelector('input');
+      assert(input, 'popup input not found');
+      input.focus();
+      await tick(30);
+      eq(blurs, 0, 'blur fired for the editor\'s own popup');
+      document.body.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
+    });
+
+    await test('leaving the editor really does emit blur', async () => {
+      let blurs = 0;
+      const { host } = mount({ onBlur: () => blurs++ });
+      caretAt(host, 5);
+      document.getElementById('outside').focus();
+      await tick(30);
+      eq(blurs, 1, 'blur was not emitted');
+    });
+
+    await test('beginExternalUI suppresses blur, endExternalUI restores the caret', async () => {
+      let blurs = 0, focuses = 0;
+      const { ed, host } = mount({ onBlur: () => blurs++, onFocus: () => focuses++ });
+      caretAt(host, 5);
+      focuses = 0;
+      ed.beginExternalUI();
+      document.getElementById('outside').focus();
+      await tick(30);
+      eq(blurs, 0, 'blur fired during host UI');
+      ed.endExternalUI();
+      await tick(30);
+      eq(focuses, 0, 'focus fired on hand-back');
+      ed.insertText('!');
+      eqHTML(ed.getHTML(), '<p>Hello! world</p>', 'caret was not restored');
+    });
+
+    await test('beginExternalUI/endExternalUI nest', async () => {
+      let blurs = 0;
+      const { ed, host } = mount({ onBlur: () => blurs++ });
+      caretAt(host, 5);
+      ed.beginExternalUI();
+      ed.beginExternalUI();
+      ed.endExternalUI();
+      document.getElementById('outside').focus();
+      await tick(30);
+      eq(blurs, 0, 'blur fired while still inside host UI');
+      ed.endExternalUI();
+      ed.insertText('!');
+      eqHTML(ed.getHTML(), '<p>Hello! world</p>', 'caret was not restored');
+    });
+
+    await test('a resolver suppresses blur for the whole round trip', async () => {
+      let blurs = 0;
+      const { ed, host } = mount({
+        onBlur: () => blurs++,
+        onRequestImage: async () => {
+          document.getElementById('outside').focus();
+          await tick(40);
+          return null;
+        },
+      });
+      caretAt(host, 5);
+      mousedown(btn(host, 'Insert Image'));
+      await tick(100);
+      eq(blurs, 0, 'blur fired while the host modal was open');
+    });
+
+    // ─── 0.2.0 behaviour that must not regress ─────────────────────────────
+
+    await test('the built-in image popup still inserts at the caret', async () => {
+      const { ed, host } = mount();
+      caretAt(host, 5);
+      mousedown(btn(host, 'Insert Image'));
+      await settle();
+      const popup = popupOf();
+      popup.querySelectorAll('input')[0].value = 'p.png';
+      popup.querySelectorAll('input')[1].value = 'Alt';
+      popup.querySelector('.jotter-popup-submit').click();
+      eqHTML(ed.getHTML(),
+        '<p>Hello<img src="p.png" alt="Alt" style="max-width:100%"> world</p>',
+        'popup insert landed off-target');
+    });
+
+    await test('the built-in link popup still edits an anchor in place', async () => {
+      const { ed, host } = mount({}, '<p>See <a href="/one">One</a> now</p>');
+      const anchor = editorEl(host).querySelector('a');
+      const r = document.createRange();
+      r.setStart(anchor.firstChild, 1);
+      r.collapse(true);
+      const sel = window.getSelection();
+      sel.removeAllRanges();
+      sel.addRange(r);
+      editorEl(host).focus();
+
+      mousedown(btn(host, 'Insert Link'));
+      await settle();
+      const popup = popupOf();
+      eq(popup.querySelectorAll('input')[0].value, '/one', 'href not pre-filled');
+      popup.querySelectorAll('input')[0].value = '/two';
+      popup.querySelector('.jotter-popup-submit').click();
+      eqHTML(ed.getHTML(), '<p>See <a href="/two">One</a> now</p>', 'anchor not updated in place');
+    });
+
+    await test('a toolbar command still emits change once', async () => {
+      let changes = 0;
+      const { ed, host } = mount({ onChange: () => changes++ });
+      selectRange(host, 0, 5);
+      mousedown(btn(host, 'Bold (Ctrl+B)'));
+      eq(changes, 1, 'expected exactly one change event');
+      assert(/<b>|<strong>/i.test(ed.getHTML()), 'bold was not applied');
+    });
+
+    await test('a custom onClick button that inserts emits change once', async () => {
+      let changes = 0;
+      const { ed, host } = mount({
+        onChange: () => changes++,
+        toolbar: [{ icon: 'star', title: 'Sign', onClick: e => e.insertHTML('<i>x</i>') }],
+      });
+      caretAt(host, 11);
+      mousedown(btn(host, 'Sign'));
+      eq(changes, 1, 'expected exactly one change event');
+      assert(/<i[^>]*>x<\/i>/.test(ed.getHTML()), 'nothing was inserted: ' + ed.getHTML());
+    });
+
+    await test('the symbol popup still inserts at the caret', async () => {
+      const { ed, host } = mount();
+      caretAt(host, 5);
+      mousedown(btn(host, 'Insert Symbol'));
+      await settle();
+      mousedown(popupOf().querySelector('.jotter-char-btn'));
+      eqHTML(ed.getHTML(), '<p>Hello← world</p>', 'symbol landed off-target');
+    });
+
+    await test('escape closes the popup and hands the caret back', async () => {
+      const { ed, host } = mount();
+      caretAt(host, 5);
+      mousedown(btn(host, 'Insert Image'));
+      await settle();
+      document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+      await settle();
+      assert(!popupOf(), 'popup stayed open');
+      ed.insertText('!');
+      eqHTML(ed.getHTML(), '<p>Hello! world</p>', 'caret was not handed back');
+    });
+
+    await test('dismissing a popup leaves no markers behind', async () => {
+      const { host } = mount();
+      caretAt(host, 5);
+      mousedown(btn(host, 'Insert Image'));
+      await settle();
+      document.body.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
+      assert(!editorEl(host).querySelector('.jotter-bookmark'), 'markers were left in the content');
+    });
+
+    await test('source mode round-trips with a bookmark outstanding', async () => {
+      const { ed, host } = mount();
+      caretAt(host, 5);
+      ed.saveSelection();
+      ed.toggleSource();
+      assert(!ed.getHTML().includes('jotter-bookmark'), 'markers leaked into source view');
+      ed.toggleSource();
+      eqHTML(ed.getHTML(), '<p>Hello world</p>', 'content did not round-trip');
+    });
+
+    await test('destroy cleans up markers and document listeners', async () => {
+      const { ed, host } = mount();
+      caretAt(host, 5);
+      ed.saveSelection();
+      const html = ed.destroy();
+      eqHTML(html, '<p>Hello world</p>', 'destroy returned markers');
+      assert(!host.querySelector('.jotter-bookmark'), 'markers survived destroy');
+      // Must not throw now that the editor is gone
+      document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+    });
+
+    // ─── Summary ───────────────────────────────────────────────────────────
+    const summary = document.getElementById('summary');
+    summary.textContent = `${passed} passed, ${failed} failed`;
+    summary.dataset.done = '1';
+    summary.dataset.failed = String(failed);
+  </script>
+</body>
+
+</html>
