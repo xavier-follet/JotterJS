@@ -8,7 +8,7 @@
  * @param {string}         [options.height='320px']          Min-height of the editable area.
  * @param {string}         [options.theme='default']         Content theme: 'default'|'warm'|'ink'|'forest'.
  * @param {Array}          [options.toolbar]                 Override toolbar — array of action descriptors.
- *                                                           Defaults to TOOLBAR_ACTIONS.
+ *                                                           Defaults to JotterJS.presets.full.
  * @param {Function}       [options.onChange]                Callback(html) fired on every content change.
  * @param {Function}       [options.onFocus]                 Callback fired on editor focus.
  * @param {Function}       [options.onBlur]                  Callback fired on editor blur.
@@ -34,9 +34,9 @@
  *   destroy()           → string   Unmount; restore original innerHTML; return final HTML.
  *
  * Static properties:
- *   JotterJS.toolbar    Full default toolbar array.
+ *   JotterJS.toolbar    Full default toolbar array (alias of JotterJS.presets.full).
  *   JotterJS.actions    Named action descriptors (pick and compose custom toolbars).
- *   JotterJS.presets    { minimal, writing } — pre-built toolbar arrays.
+ *   JotterJS.presets    { minimal, writing, full } — toolbar arrays built from JotterJS.actions.
  */
 
 // ─── Constants ────────────────────────────────────────────────────────────────
@@ -50,56 +50,104 @@
 //   { icon?, label?, title, onClick(editor) }    → external callback button
 //
 // Any action with `label` renders a text button (.jotter-btn--text) instead of an icon.
+//
+// ACTIONS is the single source of truth for the catalogue: every toolbar — the
+// default one, every preset, and any host-composed array — is built from these
+// objects. Do not re-inline a descriptor anywhere else; add or edit it here.
+//
+// Each descriptor is frozen because presets share references with one another
+// and with JotterJS.actions. Mutating one in place would leak across every
+// preset and every editor instance, so hosts must spread-copy to customise:
+//   { ...JotterJS.actions.image, onClick: fn }   ✓
+//   JotterJS.actions.image.onClick = fn          ✗ throws (frozen)
+// The builders only ever read descriptors, so sharing is otherwise safe.
 
-const TOOLBAR_ACTIONS = [
-  { custom: 'toggleSource', label: 'Source', title: 'Edit HTML Source' },
-  { type: 'sep' },
-  { cmd: 'undo', icon: 'undo',  title: 'Undo (Ctrl+Z)' },
-  { cmd: 'redo', icon: 'redo',  title: 'Redo (Ctrl+Y)' },
-  { type: 'sep' },
-  { cmd: 'copy',  icon: 'content_copy',  title: 'Copy'  },
-  { cmd: 'cut',   icon: 'content_cut',   title: 'Cut'   },
-  { cmd: 'paste', icon: 'content_paste', title: 'Paste' },
-  { type: 'sep' },
-  { cmd: 'removeFormat', icon: 'format_clear', title: 'Clear Formatting' },
-  { type: 'sep' },
-  { type: 'blockformat' },
-  { type: 'fontfamily' },
-  { type: 'fontsize' },
-  { type: 'sep' },
-  { cmd: 'bold',          icon: 'format_bold',       title: 'Bold (Ctrl+B)'      },
-  { cmd: 'italic',        icon: 'format_italic',     title: 'Italic (Ctrl+I)'    },
-  { cmd: 'underline',     icon: 'format_underlined', title: 'Underline (Ctrl+U)' },
-  { cmd: 'strikeThrough', icon: 'strikethrough_s',   title: 'Strikethrough'      },
-  { cmd: 'subscript',     icon: 'subscript',         title: 'Subscript'          },
-  { cmd: 'superscript',   icon: 'superscript',       title: 'Superscript'        },
-  { custom: 'code',       icon: 'code',              title: 'Inline Code'        },
-  { type: 'sep' },
-  { type: 'color', cmd: 'foreColor',   icon: 'format_color_text', title: 'Text Color'       },
-  { type: 'color', cmd: 'hiliteColor', icon: 'format_color_fill', title: 'Background Color' },
-  { type: 'sep' },
-  { cmd: 'justifyLeft',   icon: 'format_align_left',   title: 'Align Left'   },
-  { cmd: 'justifyCenter', icon: 'format_align_center', title: 'Align Center' },
-  { cmd: 'justifyRight',  icon: 'format_align_right',  title: 'Align Right'  },
-  { type: 'sep' },
-  { cmd: 'insertUnorderedList', icon: 'format_list_bulleted', title: 'Bullet List'   },
-  { cmd: 'insertOrderedList',   icon: 'format_list_numbered', title: 'Numbered List' },
-  { type: 'sep' },
-  { type: 'popup', id: 'link', icon: 'insert_link', title: 'Insert Link' },
-  { cmd: 'unlink',     icon: 'link_off',    title: 'Remove Link' },
-  { type: 'sep' },
-  { type: 'popup', id: 'image',       icon: 'image',         title: 'Insert Image'          },
-  { type: 'popup', id: 'video',       icon: 'smart_display', title: 'Insert YouTube Video'  },
-  { type: 'popup', id: 'table',       icon: 'table_chart',   title: 'Insert Table'          },
-  { type: 'popup', id: 'embed',       icon: 'html',          title: 'Insert Embed'          },
-  { type: 'popup', id: 'symbol',      icon: 'emoji_symbols', title: 'Insert Symbol'         },
-  { type: 'popup', id: 'specialchar', icon: 'format_shapes', title: 'Special Characters'    },
-  { type: 'popup', id: 'lorem',       icon: 'script',       title: 'Insert Lorem Ipsum'    },
-  { type: 'sep' },
-  { type: 'theme' },
-  { type: 'sep' },
-  { type: 'theme' },
-];
+const ACTIONS = {
+  source:      { custom: 'toggleSource', label: 'Source', title: 'Edit HTML Source' },
+  sep:         { type: 'sep' },
+  blockformat: { type: 'blockformat' },
+  fontfamily:  { type: 'fontfamily' },
+  fontsize:    { type: 'fontsize' },
+  theme:       { type: 'theme' },
+  undo:        { cmd: 'undo',                 icon: 'undo',                  title: 'Undo (Ctrl+Z)'       },
+  redo:        { cmd: 'redo',                 icon: 'redo',                  title: 'Redo (Ctrl+Y)'       },
+  bold:        { cmd: 'bold',                 icon: 'format_bold',           title: 'Bold (Ctrl+B)'       },
+  italic:      { cmd: 'italic',               icon: 'format_italic',         title: 'Italic (Ctrl+I)'     },
+  underline:   { cmd: 'underline',            icon: 'format_underlined',     title: 'Underline (Ctrl+U)'  },
+  strike:      { cmd: 'strikeThrough',        icon: 'strikethrough_s',       title: 'Strikethrough'       },
+  subscript:   { cmd: 'subscript',            icon: 'subscript',             title: 'Subscript'           },
+  superscript: { cmd: 'superscript',          icon: 'superscript',           title: 'Superscript'         },
+  code:        { custom: 'code',              icon: 'code',                  title: 'Inline Code'         },
+  copy:        { cmd: 'copy',                 icon: 'content_copy',          title: 'Copy'                },
+  cut:         { cmd: 'cut',                  icon: 'content_cut',           title: 'Cut'                 },
+  paste:       { cmd: 'paste',                icon: 'content_paste',         title: 'Paste'               },
+  clearFormat: { cmd: 'removeFormat',         icon: 'format_clear',          title: 'Clear Formatting'    },
+  alignLeft:   { cmd: 'justifyLeft',          icon: 'format_align_left',     title: 'Align Left'          },
+  alignCenter: { cmd: 'justifyCenter',        icon: 'format_align_center',   title: 'Align Center'        },
+  alignRight:  { cmd: 'justifyRight',         icon: 'format_align_right',    title: 'Align Right'         },
+  bullets:     { cmd: 'insertUnorderedList',  icon: 'format_list_bulleted',  title: 'Bullet List'         },
+  numbered:    { cmd: 'insertOrderedList',    icon: 'format_list_numbered',  title: 'Numbered List'       },
+  link:        { type: 'popup', id: 'link',   icon: 'insert_link',           title: 'Insert Link'         },
+  unlink:      { cmd: 'unlink',               icon: 'link_off',              title: 'Remove Link'         },
+  foreColor:   { type: 'color', cmd: 'foreColor',   icon: 'format_color_text', title: 'Text Color'        },
+  hiliteColor: { type: 'color', cmd: 'hiliteColor', icon: 'format_color_fill', title: 'Background Color'  },
+  image:       { type: 'popup', id: 'image',        icon: 'image',             title: 'Insert Image'      },
+  video:       { type: 'popup', id: 'video',        icon: 'smart_display',     title: 'Insert YouTube Video' },
+  table:       { type: 'popup', id: 'table',        icon: 'table_chart',       title: 'Insert Table'      },
+  embed:       { type: 'popup', id: 'embed',        icon: 'html',              title: 'Insert Embed'      },
+  symbol:      { type: 'popup', id: 'symbol',       icon: 'emoji_symbols',     title: 'Insert Symbol'     },
+  specialChar: { type: 'popup', id: 'specialchar',  icon: 'format_shapes',     title: 'Special Characters'},
+  lorem:       { type: 'popup', id: 'lorem',        icon: 'history_edu',       title: 'Insert Lorem Ipsum'},
+};
+
+Object.values(ACTIONS).forEach(Object.freeze);
+Object.freeze(ACTIONS);
+
+const A = ACTIONS;
+
+/**
+ * Pre-built toolbar arrays, all composed from ACTIONS.
+ *   minimal  — source + bold/italic/underline + link
+ *   writing  — heading/formatting/lists/link/image
+ *   full     — everything; the default toolbar
+ * Frozen for the same reason the descriptors are: hosts extend by spreading,
+ * e.g. [...JotterJS.presets.minimal, JotterJS.actions.sep, JotterJS.actions.image].
+ */
+const PRESETS = {
+  minimal: [
+    A.source, A.sep,
+    A.bold, A.italic, A.underline, A.sep,
+    A.link, A.unlink,
+  ],
+  writing: [
+    A.source, A.sep,
+    A.undo, A.redo, A.sep,
+    A.blockformat, A.sep,
+    A.bold, A.italic, A.underline, A.strike, A.sep,
+    A.bullets, A.numbered, A.sep,
+    A.link, A.unlink, A.sep,
+    A.image,
+  ],
+  full: [
+    A.source, A.sep,
+    A.undo, A.redo, A.sep,
+    A.copy, A.cut, A.paste, A.sep,
+    A.clearFormat, A.sep,
+    A.blockformat, A.fontfamily, A.fontsize, A.sep,
+    A.bold, A.italic, A.underline, A.strike, A.subscript, A.superscript, A.code, A.sep,
+    A.foreColor, A.hiliteColor, A.sep,
+    A.alignLeft, A.alignCenter, A.alignRight, A.sep,
+    A.bullets, A.numbered, A.sep,
+    A.link, A.unlink, A.sep,
+    A.image, A.video, A.table, A.embed, A.symbol, A.specialChar, A.lorem, A.sep,
+    A.theme,
+  ],
+};
+
+Object.values(PRESETS).forEach(Object.freeze);
+Object.freeze(PRESETS);
+
+const TOOLBAR_ACTIONS = PRESETS.full;
 
 const HEADING_OPTIONS = [
   { label: 'Paragraph',  tag: 'p'          },
@@ -1281,89 +1329,25 @@ class JotterJS {
 // ─── Static references ────────────────────────────────────────────────────────
 // Attached after class definition so they survive minification without prototype pollution.
 
-/** Full default toolbar array. Spread/filter to build custom toolbars. */
-JotterJS.toolbar = TOOLBAR_ACTIONS;
+/** Full default toolbar array — alias of JotterJS.presets.full. Spread/filter to build custom toolbars. */
+JotterJS.toolbar = PRESETS.full;
 
 /**
- * Named action descriptors. Use these to compose custom toolbar arrays:
+ * Named action descriptors — the single catalogue every toolbar is built from.
+ * Use these to compose custom toolbar arrays:
  *   toolbar: [JotterJS.actions.bold, JotterJS.actions.italic, JotterJS.actions.sep, ...]
+ * Descriptors are frozen; customise by spreading, e.g.
+ *   { ...JotterJS.actions.image, onClick: fn }
  */
-JotterJS.actions = {
-  source:      { custom: 'toggleSource', label: 'Source', title: 'Edit HTML Source' },
-  sep:         { type: 'sep' },
-  blockformat: { type: 'blockformat' },
-  fontfamily:  { type: 'fontfamily' },
-  fontsize:    { type: 'fontsize' },
-  theme:       { type: 'theme' },
-  undo:        { cmd: 'undo',                 icon: 'undo',                  title: 'Undo (Ctrl+Z)'       },
-  redo:        { cmd: 'redo',                 icon: 'redo',                  title: 'Redo (Ctrl+Y)'       },
-  bold:        { cmd: 'bold',                 icon: 'format_bold',           title: 'Bold (Ctrl+B)'       },
-  italic:      { cmd: 'italic',               icon: 'format_italic',         title: 'Italic (Ctrl+I)'     },
-  underline:   { cmd: 'underline',            icon: 'format_underlined',     title: 'Underline (Ctrl+U)'  },
-  strike:      { cmd: 'strikeThrough',        icon: 'strikethrough_s',       title: 'Strikethrough'       },
-  subscript:   { cmd: 'subscript',            icon: 'subscript',             title: 'Subscript'           },
-  superscript: { cmd: 'superscript',          icon: 'superscript',           title: 'Superscript'         },
-  code:        { custom: 'code',              icon: 'code',                  title: 'Inline Code'         },
-  copy:        { cmd: 'copy',                 icon: 'content_copy',          title: 'Copy'                },
-  cut:         { cmd: 'cut',                  icon: 'content_cut',           title: 'Cut'                 },
-  paste:       { cmd: 'paste',                icon: 'content_paste',         title: 'Paste'               },
-  clearFormat: { cmd: 'removeFormat',         icon: 'format_clear',          title: 'Clear Formatting'    },
-  alignLeft:   { cmd: 'justifyLeft',          icon: 'format_align_left',     title: 'Align Left'          },
-  alignCenter: { cmd: 'justifyCenter',        icon: 'format_align_center',   title: 'Align Center'        },
-  alignRight:  { cmd: 'justifyRight',         icon: 'format_align_right',    title: 'Align Right'         },
-  bullets:     { cmd: 'insertUnorderedList',  icon: 'format_list_bulleted',  title: 'Bullet List'         },
-  numbered:    { cmd: 'insertOrderedList',    icon: 'format_list_numbered',  title: 'Numbered List'       },
-  link:        { type: 'popup', id: 'link', icon: 'insert_link',   title: 'Insert Link' },
-  unlink:      { cmd: 'unlink',               icon: 'link_off',              title: 'Remove Link'         },
-  foreColor:   { type: 'color', cmd: 'foreColor',   icon: 'format_color_text', title: 'Text Color'        },
-  hiliteColor: { type: 'color', cmd: 'hiliteColor', icon: 'format_color_fill', title: 'Background Color'  },
-  image:       { type: 'popup', id: 'image',        icon: 'image',             title: 'Insert Image'      },
-  video:       { type: 'popup', id: 'video',        icon: 'smart_display',     title: 'Insert YouTube Video' },
-  table:       { type: 'popup', id: 'table',        icon: 'table_chart',       title: 'Insert Table'      },
-  embed:       { type: 'popup', id: 'embed',        icon: 'html',              title: 'Insert Embed'      },
-  symbol:      { type: 'popup', id: 'symbol',       icon: 'emoji_symbols',     title: 'Insert Symbol'     },
-  specialChar: { type: 'popup', id: 'specialchar',  icon: 'format_shapes',     title: 'Special Characters'},
-  lorem:       { type: 'popup', id: 'lorem',        icon: 'article',           title: 'Insert Lorem Ipsum'},
-};
+JotterJS.actions = ACTIONS;
 
 /**
- * Pre-built toolbar arrays for common use cases.
+ * Pre-built toolbar arrays, composed from JotterJS.actions.
  *   minimal  — bold/italic/underline + link
  *   writing  — heading/formatting/lists/link/image
+ *   full     — the default toolbar
  */
-JotterJS.presets = {
-  minimal: [
-    { custom: 'toggleSource', label: 'Source', title: 'Edit HTML Source' },
-    { type: 'sep' },
-    { cmd: 'bold',    icon: 'format_bold',      title: 'Bold'    },
-    { cmd: 'italic',  icon: 'format_italic',    title: 'Italic'  },
-    { cmd: 'underline', icon: 'format_underlined', title: 'Underline' },
-    { type: 'sep' },
-    { type: 'popup', id: 'link', icon: 'insert_link', title: 'Insert Link' },
-    { cmd: 'unlink',     icon: 'link_off',    title: 'Remove Link' },
-  ],
-  writing: [
-    { custom: 'toggleSource', label: 'Source', title: 'Edit HTML Source' },
-    { type: 'sep' },
-    { cmd: 'undo', icon: 'undo', title: 'Undo' },
-    { cmd: 'redo', icon: 'redo', title: 'Redo' },
-    { type: 'sep' },
-    { type: 'blockformat' },
-    { type: 'sep' },
-    { cmd: 'bold',          icon: 'format_bold',       title: 'Bold'          },
-    { cmd: 'italic',        icon: 'format_italic',     title: 'Italic'        },
-    { cmd: 'underline',     icon: 'format_underlined', title: 'Underline'     },
-    { cmd: 'strikeThrough', icon: 'strikethrough_s',   title: 'Strikethrough' },
-    { type: 'sep' },
-    { cmd: 'insertUnorderedList', icon: 'format_list_bulleted', title: 'Bullet List'  },
-    { cmd: 'insertOrderedList',   icon: 'format_list_numbered', title: 'Ordered List' },
-    { type: 'sep' },
-    { type: 'popup', id: 'link', icon: 'insert_link', title: 'Insert Link' },
-    { cmd: 'unlink',     icon: 'link_off',    title: 'Remove Link' },
-    { type: 'sep' },
-    { type: 'popup', id: 'image', icon: 'image', title: 'Insert Image' },
-  ],
-};
+JotterJS.presets = PRESETS;
 
 export default JotterJS;
 export { JotterJS };
