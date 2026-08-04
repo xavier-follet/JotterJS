@@ -98,6 +98,21 @@
       el.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true }));
     }
 
+    /** Returns false when the handler called preventDefault() — i.e. it took the key. */
+    function keydown(el, key, opts = {}) {
+      return el.dispatchEvent(new KeyboardEvent('keydown',
+        Object.assign({ key, bubbles: true, cancelable: true }, opts)));
+    }
+
+    /** Activates a control the way a keyboard user does: focus it, then press a key. */
+    function press(el, key = 'Enter', opts = {}) {
+      el.focus();
+      return keydown(el, key, opts);
+    }
+
+    const select = (host, id) => host.querySelector(`.jotter-toolbar [data-id="${id}"]`);
+    const count = (html, tag) => (html.match(new RegExp(`<${tag}[ >]`, 'g')) || []).length;
+
     /** Puts a collapsed caret inside the first text node of the first <p>. */
     function caretAt(host, offset) {
       const node = editorEl(host).querySelector('p').firstChild;
@@ -525,6 +540,158 @@
       assert(!host.querySelector('.jotter-bookmark'), 'markers survived destroy');
       // Must not throw now that the editor is gone
       document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+    });
+
+    // ─── Keyboard operation ────────────────────────────────────────────────
+
+    await test('Enter activates a command button', async () => {
+      const { ed, host } = mount();
+      selectRange(host, 0, 5);
+      press(btn(host, 'Bold (Ctrl+B)'));
+      eqHTML(ed.getHTML(), '<p><b>Hello</b> world</p>', 'Enter did not run the command');
+    });
+
+    await test('Space activates a command button', async () => {
+      const { ed, host } = mount();
+      selectRange(host, 0, 5);
+      press(btn(host, 'Italic (Ctrl+I)'), ' ');
+      eqHTML(ed.getHTML(), '<p><i>Hello</i> world</p>', 'Space did not run the command');
+    });
+
+    await test('keyboard activation cancels the key, so no click is synthesised', async () => {
+      const { host } = mount();
+      selectRange(host, 0, 5);
+      assert(!press(btn(host, 'Bold (Ctrl+B)')), 'Enter was left to synthesise a click');
+      assert(!press(btn(host, 'Bold (Ctrl+B)'), ' '), 'Space was left to scroll the page');
+    });
+
+    await test('a key the toolbar does not own is left alone', async () => {
+      const { host } = mount();
+      assert(keydown(btn(host, 'Bold (Ctrl+B)'), 'a'), 'an unrelated key was swallowed');
+    });
+
+    await test('one activation runs the handler exactly once', async () => {
+      let calls = 0;
+      const { host } = mount({ toolbar: [{ ...JotterJS.actions.image, onClick: () => calls++ }] });
+      const b = btn(host, 'Insert Image');
+
+      press(b);
+      eq(calls, 1, 'keyboard activation did not fire exactly once');
+
+      // The pointer path listens on mousedown only, so the click that follows a
+      // real press must not be a second activation.
+      mousedown(b);
+      b.click();
+      eq(calls, 2, 'mousedown + click fired twice');
+    });
+
+    await test('held-down Enter does not repeat the command', async () => {
+      let calls = 0;
+      const { host } = mount({ toolbar: [{ ...JotterJS.actions.image, onClick: () => calls++ }] });
+      const b = btn(host, 'Insert Image');
+      press(b);
+      keydown(b, 'Enter', { repeat: true });
+      keydown(b, 'Enter', { repeat: true });
+      eq(calls, 1, 'auto-repeat re-fired the command');
+    });
+
+    await test('focus stays on the toolbar after a keyboard activation', async () => {
+      const { host } = mount();
+      selectRange(host, 0, 5);
+      const b = btn(host, 'Bold (Ctrl+B)');
+      press(b);
+      eq(document.activeElement, b, 'focus was dropped into the editor');
+    });
+
+    await test('a mouse activation still leaves focus in the editor', async () => {
+      const { host } = mount();
+      selectRange(host, 0, 5);
+      mousedown(btn(host, 'Bold (Ctrl+B)'));
+      eq(document.activeElement, editorEl(host), 'the mouse path moved focus off the editor');
+    });
+
+    await test('Enter opens a popup and moves focus into it', async () => {
+      const { ed, host } = mount();
+      caretAt(host, 5);
+      press(btn(host, 'Insert Link'));
+      await settle();
+      const popup = popupOf();
+      assert(popup, 'popup did not open');
+      assert(popup.contains(document.activeElement), 'focus never reached the popup');
+      ed.destroy();
+    });
+
+    await test('a keyboard-opened popup still inserts at the caret it started from', async () => {
+      const { ed, host } = mount();
+      caretAt(host, 5);
+      press(btn(host, 'Insert Image'));
+      await settle();
+      const popup = popupOf();
+      popup.querySelectorAll('input')[0].value = 'p.png';
+      popup.querySelector('.jotter-popup-submit').click();
+      eqHTML(ed.getHTML(),
+        '<p>Hello<img src="p.png" alt="" style="max-width:100%"> world</p>',
+        'keyboard-opened popup landed off-target');
+    });
+
+    await test('Enter on a symbol inserts it', async () => {
+      const { ed, host } = mount();
+      caretAt(host, 5);
+      press(btn(host, 'Insert Symbol'));
+      await settle();
+      press(popupOf().querySelector('.jotter-char-btn'));
+      eqHTML(ed.getHTML(), '<p>Hello← world</p>', 'symbol was not inserted');
+    });
+
+    await test('the table grid sizes with arrows and inserts on Enter', async () => {
+      const { ed, host } = mount();
+      caretAt(host, 5);
+      press(btn(host, 'Insert Table'));
+      await settle();
+      const grid = popupOf().querySelector('.jotter-table-grid');
+      assert(grid.contains(document.activeElement), 'the grid took no focus');
+      keydown(document.activeElement, 'ArrowRight');
+      keydown(document.activeElement, 'ArrowDown');
+      keydown(document.activeElement, 'Enter');
+      const html = ed.getHTML();
+      eq(count(html, 'th'), 2, 'wrong header cell count for a 2 × 2 table');
+      eq(count(html, 'td'), 2, 'wrong body cell count for a 2 × 2 table');
+    });
+
+    await test('the table grid keeps a single tab stop', async () => {
+      const { ed, host } = mount();
+      caretAt(host, 5);
+      press(btn(host, 'Insert Table'));
+      await settle();
+      const grid = popupOf().querySelector('.jotter-table-grid');
+      keydown(document.activeElement, 'ArrowDown');
+      const stops = grid.querySelectorAll('.jotter-table-cell[tabindex="0"]');
+      eq(stops.length, 1, 'the roving tabindex left more than one tab stop');
+      eq(stops[0], document.activeElement, 'the tab stop is not the focused cell');
+      ed.destroy();
+    });
+
+    await test('a select driven by the keyboard applies to the caret', async () => {
+      const { ed, host } = mount();
+      caretAt(host, 5);
+      const sel = select(host, 'blockformat');
+      sel.focus();
+      keydown(sel, 'ArrowDown');
+      sel.value = 'h2';
+      sel.dispatchEvent(new Event('change', { bubbles: true }));
+      eqHTML(ed.getHTML(), '<h2>Hello world</h2>', 'the select did not format the caret block');
+      eq(document.activeElement, sel, 'focus was taken off the select mid-navigation');
+    });
+
+    await test('a select driven by the mouse still hands focus back to the editor', async () => {
+      const { ed, host } = mount();
+      caretAt(host, 5);
+      const sel = select(host, 'blockformat');
+      mousedown(sel);
+      sel.value = 'h3';
+      sel.dispatchEvent(new Event('change', { bubbles: true }));
+      eqHTML(ed.getHTML(), '<h3>Hello world</h3>', 'the select did not format the caret block');
+      eq(document.activeElement, editorEl(host), 'the mouse path left focus on the select');
     });
 
     // ─── Summary ───────────────────────────────────────────────────────────
