@@ -14,6 +14,7 @@ A lightweight, vanilla JS rich-text editor component built on `contenteditable`.
 - Replaceable insert dialogs — swap the built-in image/link/video/embed popups for your own UI
 - Selection bookmarks that survive async host UI and DOM mutation
 - Event system (`change`, `focus`, `blur`)
+- Keyboard-operable toolbar — every control activates with Enter and Space
 - Simple chainable API
 
 ## Installation
@@ -237,6 +238,28 @@ blur then re-render, and a re-render remounts the editor — with your modal sti
 open on top of it. Between `beginExternalUI()` and `endExternalUI()`, `blur` and
 `focus` are not emitted, so that chain never starts. The `onRequest*` hooks wrap
 this for you.
+
+## Keyboard
+
+Every toolbar control is operable without a mouse. Buttons activate on **Enter**
+and **Space**; the selects work as native selects do; the colour buttons open the
+native colour picker. Popups take focus when they are opened from the keyboard,
+and the table picker is a single tab stop — **arrows** size the table, **Enter**
+inserts it. **Escape** closes any popup and hands the caret back to the editor.
+
+Activation runs the same code for the pointer and the keyboard, and fires
+exactly once either way. Focus behaves the way each input method expects: a
+mouse click leaves the caret in the editor, while a key press keeps focus on the
+control so you can keep working along the toolbar.
+
+> **Upgrading from ≤ 0.4.0:** if your app bridged this gap by listening for
+> Enter/Space on `.jotter-toolbar` and re-dispatching a synthetic `mousedown` at
+> `.jotter-btn`, remove that bridge. The editor now handles the key itself, and
+> a synthetic `mousedown` on top of it would apply the command twice.
+
+Two known gaps: `Tab` inside the editing area inserts indentation rather than
+moving focus, so reach the toolbar by tabbing in from before the editor; and the
+symbol and special-character grids are one tab stop per character.
 
 ## Development
 

@@ -367,6 +367,55 @@ class JotterJS {
     return s;
   }
 
+  // ─── Activation ───────────────────────────────────────────────────────────
+  // Every toolbar control activates through _bindActivation, so the mouse and
+  // the keyboard always run the same body. Binding them separately is what let
+  // the keyboard rot: the pointer path grew a selection save/restore dance the
+  // key path never had, and a focused button did nothing at all.
+
+  /**
+   * Binds a control's activation to the pointer *and* the keyboard.
+   *
+   * The pointer path has to run on `mousedown` with the default prevented —
+   * that is what keeps the caret inside the contenteditable instead of letting
+   * focus jump to the button before the command runs. A focused button has no
+   * such problem, so the key path just calls the same `run()`.
+   *
+   * preventDefault() on the keydown does double duty: Space no longer scrolls
+   * the page, and the browser no longer synthesises the click it derives from a
+   * key press — so one activation stays one activation, here and for anything
+   * else listening further down. Auto-repeat is dropped for the same reason.
+   *
+   * @param {Element}  el
+   * @param {Function} run  Receives true when the activation came from the keyboard.
+   */
+  _bindActivation(el, run) {
+    el.addEventListener('mousedown', e => {
+      e.preventDefault();
+      run(false);
+    });
+    el.addEventListener('keydown', e => {
+      if (e.key !== 'Enter' && e.key !== ' ' && e.key !== 'Spacebar') return;
+      if (e.repeat) return;
+      e.preventDefault();
+      run(true);
+    });
+  }
+
+  /**
+   * Hands focus back to a control after a keyboard activation, so the user
+   * keeps their place on the toolbar instead of being dropped into the editor
+   * on every keystroke. The pointer path never moved focus off the editor in
+   * the first place, so it is left alone.
+   *
+   * Skipped when something outside the editor's own chrome has taken focus —
+   * a host modal opened from an `onClick`, say — since stealing it back would
+   * break that UI.
+   */
+  _returnFocus(el, viaKeyboard) {
+    if (viaKeyboard && this._isInternalTarget(document.activeElement)) el.focus();
+  }
+
   /**
    * General button builder. Priority order for click handling:
    *   1. action.onClick(editor)   — external callback
@@ -393,8 +442,7 @@ class JotterJS {
       btn.appendChild(icon);
     }
 
-    btn.addEventListener('mousedown', e => {
-      e.preventDefault();
+    this._bindActivation(btn, viaKeyboard => {
       this._editor.focus();
 
       this._applyEdit(() => {
@@ -419,9 +467,36 @@ class JotterJS {
       });
 
       this._updateToolbarState();
+      this._returnFocus(btn, viaKeyboard);
     });
 
     return btn;
+  }
+
+  /**
+   * Keeps the caret bookmarked for a select, whichever way the user drives it.
+   * By mouse the bookmark has to be taken on `mousedown`, before focus leaves
+   * the editable; by keyboard the value can change on the very first arrow
+   * press, so the keydown has to take one too.
+   *
+   * Returns a state object the `change` handler reads to decide where focus
+   * belongs afterwards: back on the select for a keyboard user still walking
+   * the options, in the editor for a mouse user who has finished picking.
+   */
+  _bindSelectCaret(sel) {
+    const state = { viaKeyboard: false };
+    sel.addEventListener('mousedown', () => {
+      state.viaKeyboard = false;
+      this._saveBookmark();
+    });
+    sel.addEventListener('keydown', e => {
+      if (e.key === 'Tab' || e.key === 'Escape') return;
+      state.viaKeyboard = true;
+      // Not _saveBookmark: once the select has focus a re-read can come back
+      // empty, and overwriting a good bookmark with nothing loses the caret.
+      if (this._savedBookmark == null) this._saveBookmark();
+    });
+    return state;
   }
 
   _buildBlockFormatSelect() {
@@ -435,10 +510,11 @@ class JotterJS {
       opt.textContent = label;
       sel.appendChild(opt);
     });
-    sel.addEventListener('mousedown', () => this._saveBookmark());
+    const caret = this._bindSelectCaret(sel);
     sel.addEventListener('change', () => {
       this._restoreSavedBookmark();
       this._applyEdit(() => document.execCommand('formatBlock', false, sel.value));
+      this._returnFocus(sel, caret.viaKeyboard);
     });
     return sel;
   }
@@ -459,11 +535,12 @@ class JotterJS {
       opt.style.fontFamily = f;
       sel.appendChild(opt);
     });
-    sel.addEventListener('mousedown', () => this._saveBookmark());
+    const caret = this._bindSelectCaret(sel);
     sel.addEventListener('change', () => {
       if (!sel.value) return;
       this._restoreSavedBookmark();
       this._applyEdit(() => document.execCommand('fontName', false, sel.value));
+      this._returnFocus(sel, caret.viaKeyboard);
     });
     return sel;
   }
@@ -483,11 +560,12 @@ class JotterJS {
       opt.textContent = `${s}px`;
       sel.appendChild(opt);
     });
-    sel.addEventListener('mousedown', () => this._saveBookmark());
+    const caret = this._bindSelectCaret(sel);
     sel.addEventListener('change', () => {
       if (!sel.value) return;
       this._restoreSavedBookmark();
       this._applyEdit(() => this._applyFontSize(sel.value));
+      this._returnFocus(sel, caret.viaKeyboard);
     });
     return sel;
   }
@@ -537,6 +615,11 @@ class JotterJS {
     input.value = defaultColor;
     input.tabIndex = -1;
 
+    // The native colour dialog is opened by the button, not entered as a tab
+    // stop, so which way the button was activated has to be remembered until
+    // the dialog comes back with a value.
+    let viaKeyboard = false;
+
     input.addEventListener('change', () => {
       const color = input.value;
       swatch.style.background = color;
@@ -544,10 +627,11 @@ class JotterJS {
       else this._lastHiliteColor = color;
       this._restoreSavedBookmark();
       this._applyEdit(() => document.execCommand(action.cmd, false, color));
+      this._returnFocus(btn, viaKeyboard);
     });
 
-    btn.addEventListener('mousedown', e => {
-      e.preventDefault();
+    this._bindActivation(btn, fromKeyboard => {
+      viaKeyboard = fromKeyboard;
       this._saveBookmark();
       input.click();
     });
@@ -576,9 +660,7 @@ class JotterJS {
     icon.textContent = action.icon;
     btn.appendChild(icon);
 
-    btn.addEventListener('mousedown', e => {
-      e.preventDefault();
-
+    this._bindActivation(btn, viaKeyboard => {
       const resolver = this._resolverFor(action.id);
       if (resolver) {
         this._hidePopup();
@@ -594,9 +676,22 @@ class JotterJS {
       }
 
       this._showPopup(btn, this._buildPopupContent(action.id), action.id);
+      if (viaKeyboard) this._focusPopup();
     });
 
     return btn;
+  }
+
+  /**
+   * Moves focus into a popup that was opened from the keyboard. The popup lives
+   * on document.body, a whole document away from the button that opened it, so
+   * without this the fields the user just asked for would be unreachable
+   * without tabbing through the rest of the page.
+   */
+  _focusPopup() {
+    const el = this._popup.querySelector(
+      'input, textarea, select, button, [tabindex]:not([tabindex="-1"])');
+    if (el) el.focus();
   }
 
   _buildPopupContainer() {
@@ -657,7 +752,12 @@ class JotterJS {
     }
   }
 
-  /** Hover-to-select grid (up to 8×10). Click inserts <table> with <th> header row. */
+  /**
+   * Size picker (up to 8×10) inserting a <table> with a <th> header row.
+   * Pointer: hover sizes it, click inserts. Keyboard: the grid is a single tab
+   * stop (roving tabindex), arrows size it and Enter/Space inserts — 80 tab
+   * stops would be worse than no keyboard support at all.
+   */
   _popupTable() {
     const wrap = document.createElement('div');
     wrap.className = 'jotter-popup-inner';
@@ -669,32 +769,64 @@ class JotterJS {
     const grid = document.createElement('div');
     grid.className = 'jotter-table-grid';
     grid.style.gridTemplateColumns = `repeat(${COLS}, 1fr)`;
+    grid.setAttribute('role', 'grid');
+    grid.setAttribute('aria-label', 'Table size');
 
     const hint = document.createElement('div');
     hint.className = 'jotter-popup-hint';
-    hint.textContent = 'Hover to select size';
+    hint.textContent = 'Hover or arrow to select size';
 
     const cells = [];
+    const preview = (r, c) => {
+      hint.textContent = `${r + 1} × ${c + 1} table`;
+      cells.forEach(cl => {
+        cl.classList.toggle('jotter-table-cell--active',
+          +cl.dataset.r <= r && +cl.dataset.c <= c);
+      });
+    };
+
     for (let r = 0; r < ROWS; r++) {
       for (let c = 0; c < COLS; c++) {
         const cell = document.createElement('span');
         cell.className = 'jotter-table-cell';
         cell.dataset.r = r;
         cell.dataset.c = c;
+        cell.setAttribute('role', 'gridcell');
+        cell.setAttribute('aria-label', `${r + 1} by ${c + 1} table`);
+        cell.tabIndex = (r === 0 && c === 0) ? 0 : -1;
 
-        cell.addEventListener('mouseenter', () => {
-          hint.textContent = `${r + 1} × ${c + 1} table`;
-          cells.forEach(cl => {
-            cl.classList.toggle('jotter-table-cell--active',
-              +cl.dataset.r <= r && +cl.dataset.c <= c);
-          });
-        });
+        cell.addEventListener('mouseenter', () => preview(r, c));
+        cell.addEventListener('focus', () => preview(r, c));
         cell.addEventListener('click', () => this._insertTable(r + 1, c + 1));
 
         cells.push(cell);
         grid.appendChild(cell);
       }
     }
+
+    const STEP = { ArrowRight: [0, 1], ArrowLeft: [0, -1], ArrowDown: [1, 0], ArrowUp: [-1, 0] };
+    grid.addEventListener('keydown', e => {
+      const cell = cells.indexOf(document.activeElement) === -1 ? null : document.activeElement;
+      if (!cell) return;
+      const r = +cell.dataset.r, c = +cell.dataset.c;
+
+      if (e.key === 'Enter' || e.key === ' ' || e.key === 'Spacebar') {
+        e.preventDefault();
+        this._insertTable(r + 1, c + 1);
+        return;
+      }
+
+      const step = STEP[e.key];
+      if (!step) return;
+      e.preventDefault();
+      const nr = Math.min(ROWS - 1, Math.max(0, r + step[0]));
+      const nc = Math.min(COLS - 1, Math.max(0, c + step[1]));
+      const next = cells[nr * COLS + nc];
+      if (next === cell) return;
+      cell.tabIndex = -1;
+      next.tabIndex = 0;
+      next.focus();
+    });
 
     wrap.appendChild(grid);
     wrap.appendChild(hint);
@@ -883,8 +1015,7 @@ class JotterJS {
       btn.className = 'jotter-char-btn';
       btn.textContent = ch;
       btn.title = `U+${ch.codePointAt(0).toString(16).toUpperCase().padStart(4, '0')}`;
-      btn.addEventListener('mousedown', e => {
-        e.preventDefault();
+      this._bindActivation(btn, () => {
         this._commitPopup(() => document.execCommand('insertText', false, ch));
       });
       grid.appendChild(btn);
@@ -902,8 +1033,7 @@ class JotterJS {
       btn.type = 'button';
       btn.className = 'jotter-lorem-btn';
       btn.textContent = v.label;
-      btn.addEventListener('mousedown', e => {
-        e.preventDefault();
+      this._bindActivation(btn, () => {
         this._commitPopup(() => document.execCommand(
           v.isHTML ? 'insertHTML' : 'insertText', false, v.text));
       });

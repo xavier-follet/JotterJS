@@ -600,3 +600,20 @@
   border-color: #7a6a4a;
   color: #7a6a4a;
 }
+
+/* ─── Keyboard focus ────────────────────────────────────────────────────────
+   Every toolbar and popup control activates on Enter/Space as well as with the
+   pointer, so each one needs a focus ring — including the two that opt out of
+   the UA default (.jotter-select) or are not natively focusable at all
+   (.jotter-table-cell, which carries a roving tabindex). :focus-visible keeps
+   the ring off the pointer path, where it would only be noise. */
+
+.jotter-btn:focus-visible,
+.jotter-select:focus-visible,
+.jotter-char-btn:focus-visible,
+.jotter-lorem-btn:focus-visible,
+.jotter-popup-submit:focus-visible,
+.jotter-table-cell:focus-visible {
+  outline: 2px solid var(--jotter-accent);
+  outline-offset: 1px;
+}
