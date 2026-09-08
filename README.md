@@ -12,6 +12,7 @@ A lightweight, vanilla JS rich-text editor component built on `contenteditable`.
 - Pre-built toolbar presets (`minimal`, `writing`, `full`) and fully custom toolbar support
 - Custom toolbar buttons with `onClick` callbacks
 - Replaceable insert dialogs — swap the built-in image/link/video/embed popups for your own UI
+- Click to select an image, video, or embed block: resize by dragging its handles, drag it to reposition, or copy/cut/paste it like any other content
 - Selection bookmarks that survive async host UI and DOM mutation
 - Event system (`change`, `focus`, `blur`)
 - Keyboard-operable toolbar — every control activates with Enter and Space
@@ -260,6 +261,33 @@ control so you can keep working along the toolbar.
 Two known gaps: `Tab` inside the editing area inserts indentation rather than
 moving focus, so reach the toolbar by tabbing in from before the editor; and the
 symbol and special-character grids are one tab stop per character.
+
+## Media blocks
+
+Images, YouTube embeds, and generic embeds behave as atomic, direct-manipulation
+blocks rather than plain inline content:
+
+- **Select** — click one to show a selection frame with resize handles. Video
+  and embed content is never interactive while editing (clicking it always
+  selects the block instead of playing/activating it), so nothing behind it
+  can hijack the click.
+- **Resize** — drag any handle to change its width; height always follows on
+  its own (natural image aspect ratio, the video's 16:9 box, or an embed's
+  normal reflow), so there's nothing to distort.
+- **Move** — once selected, drag the block itself to reposition it elsewhere
+  in the document. A plain click that doesn't move the pointer just keeps it
+  selected, exactly as before.
+- **Delete** — Backspace or Delete removes the selected block.
+- **Copy / Cut / Paste** — work like they do anywhere else, including across
+  browser tabs and other JotterJS instances: copying or cutting a selected
+  block puts clean HTML on the system clipboard (no internal bookkeeping like
+  the click-shield leaks out), and pasting sanitizes and re-inserts it, so a
+  pasted video/embed block is fully functional again.
+
+All of the above go through `document.execCommand`, so they participate in the
+same native undo/redo stack as typing and toolbar commands (Ctrl+Z / Ctrl+Y,
+or the Undo/Redo buttons). A move is internally a delete-then-insert, so
+unwinding one takes two undo steps rather than one.
 
 ## Development
 

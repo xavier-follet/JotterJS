@@ -273,8 +273,12 @@ class JotterJS {
     this._lastHiliteColor  = '#c8a96e';
     this._selectedMedia    = null;       // currently selected img/video-wrap/embed-wrap
     this._resizeState      = null;       // in-flight handle drag, see _beginResize
+    this._moveState        = null;       // in-flight drag-to-reposition, see _beginPotentialMove
+    this._suppressAutoEmit = false;      // true mid-move: the input handler's own emit is skipped
     this._onResizeMove     = this._onResizeMove.bind(this);
     this._onResizeEnd      = this._onResizeEnd.bind(this);
+    this._onMoveMove       = this._onMoveMove.bind(this);
+    this._onMoveUp         = this._onMoveUp.bind(this);
     this._init();
   }
 
@@ -1302,10 +1306,11 @@ class JotterJS {
       frame.appendChild(h);
     });
     frame.addEventListener('mousedown', e => {
-      const handle = e.target.closest('.jotter-resize-handle');
-      if (!handle || !this._selectedMedia) return;
+      if (!this._selectedMedia) return;
       e.preventDefault();
-      this._beginResize(handle.dataset.handle, e);
+      const handle = e.target.closest('.jotter-resize-handle');
+      if (handle) this._beginResize(handle.dataset.handle, e);
+      else this._beginPotentialMove(this._selectedMedia, e);
     });
     return frame;
   }
@@ -1330,7 +1335,14 @@ class JotterJS {
     return null;
   }
 
-  /** Selects a media element: shows the frame over it and parks a real caret before it. */
+  /**
+   * Selects a media element: shows the frame over it and makes it the real DOM
+   * selection (the whole node, not a collapsed caret beside it). A real
+   * non-collapsed selection is what lets native Ctrl+C/Ctrl+X and the
+   * toolbar's Copy/Cut buttons (both just execCommand('copy'/'cut')) work on
+   * it for free — see the 'copy'/'cut' listeners in _bindEvents for how the
+   * click-shield is kept out of what actually lands on the clipboard.
+   */
   _selectMedia(el) {
     if (this._selectedMedia === el) return;
     this._deselectMedia();
@@ -1340,8 +1352,7 @@ class JotterJS {
 
     this._editor.focus({ preventScroll: true });
     const range = document.createRange();
-    range.setStartBefore(el);
-    range.collapse(true);
+    range.selectNode(el);
     const sel = window.getSelection();
     sel.removeAllRanges();
     sel.addRange(range);
@@ -1349,9 +1360,10 @@ class JotterJS {
     this._updateToolbarState();
   }
 
-  /** Clears the current media selection (and aborts any in-flight resize). */
+  /** Clears the current media selection (and aborts any in-flight resize or move). */
   _deselectMedia() {
     if (this._resizeState) this._abortResize();
+    if (this._moveState) this._abortMove();
     if (!this._selectedMedia) return;
     this._selectedMedia = null;
     this._mediaFrame.classList.remove('jotter-media-frame--visible');
@@ -1449,6 +1461,165 @@ class JotterJS {
     this._positionMediaFrame();
   }
 
+  /**
+   * Arms a possible drag-to-reposition without committing to one: a plain
+   * click (mouseup with no meaningful movement) must still work as "just
+   * select it", so nothing visible happens until the pointer actually moves
+   * past a small threshold — see _onMoveMove.
+   */
+  _beginPotentialMove(el, e) {
+    this._moveState = { el, startX: e.clientX, startY: e.clientY, dragging: false };
+    document.addEventListener('mousemove', this._onMoveMove);
+    document.addEventListener('mouseup', this._onMoveUp, { once: true });
+  }
+
+  _onMoveMove(e) {
+    const s = this._moveState;
+    if (!s) return;
+    if (!s.dragging) {
+      if (Math.hypot(e.clientX - s.startX, e.clientY - s.startY) < 5) return;
+      s.dragging = true;
+      s.before = this._richHTML();
+      this._mediaFrame.classList.add('jotter-media-frame--dragging');
+      document.body.style.cursor = 'grabbing';
+    }
+    s.dropRange = this._rangeFromPoint(e.clientX, e.clientY);
+    this._showDropIndicator(s.dropRange);
+  }
+
+  _onMoveUp() {
+    document.removeEventListener('mousemove', this._onMoveMove);
+    const s = this._moveState;
+    this._moveState = null;
+    this._mediaFrame.classList.remove('jotter-media-frame--dragging');
+    document.body.style.cursor = '';
+    this._hideDropIndicator();
+    if (s && s.dragging) this._commitMove(s.el, s.dropRange, s.before);
+  }
+
+  /** Escape mid-drag: drop nothing, leave the document exactly as it was. */
+  _abortMove() {
+    const s = this._moveState;
+    if (!s) return;
+    document.removeEventListener('mousemove', this._onMoveMove);
+    document.removeEventListener('mouseup', this._onMoveUp);
+    this._moveState = null;
+    this._mediaFrame.classList.remove('jotter-media-frame--dragging');
+    document.body.style.cursor = '';
+    this._hideDropIndicator();
+  }
+
+  /**
+   * Hit-tests viewport coordinates to a caret position, rejecting drops
+   * outside the editor and drops inside the very node being dragged (moving
+   * something into itself makes no sense and would detach it from the doc).
+   */
+  _rangeFromPoint(x, y) {
+    let range = null;
+    if (document.caretRangeFromPoint) {
+      range = document.caretRangeFromPoint(x, y);
+    } else if (document.caretPositionFromPoint) {
+      const pos = document.caretPositionFromPoint(x, y);
+      if (pos) {
+        range = document.createRange();
+        range.setStart(pos.offsetNode, pos.offset);
+        range.collapse(true);
+      }
+    }
+    if (!range || !this._editor.contains(range.startContainer)) return null;
+    const s = this._moveState;
+    if (s && s.el.contains(range.startContainer)) return null;
+    return range;
+  }
+
+  _buildDropIndicator() {
+    const el = document.createElement('div');
+    el.className = 'jotter-drop-indicator';
+    return el;
+  }
+
+  /**
+   * Shows a vertical text-caret-style indicator at the exact drop point, or
+   * hides it when the drop target is invalid. A full-width horizontal line
+   * would suggest a new block boundary; the drop actually lands at whatever
+   * precise character position was hit-tested (mid-line included), so the
+   * indicator has to match that — same idea as where a text cursor blinks.
+   */
+  _showDropIndicator(range) {
+    if (!this._dropIndicator) {
+      this._dropIndicator = this._buildDropIndicator();
+      this._editorWrap.appendChild(this._dropIndicator);
+    }
+    const rect = range && range.getClientRects()[0];
+    if (!rect) { this._dropIndicator.style.display = 'none'; return; }
+    const wrapRect = this._editorWrap.getBoundingClientRect();
+    this._dropIndicator.style.display = 'block';
+    this._dropIndicator.style.top    = (rect.top  - wrapRect.top  + this._editorWrap.scrollTop)  + 'px';
+    this._dropIndicator.style.left   = (rect.left - wrapRect.left + this._editorWrap.scrollLeft) + 'px';
+    this._dropIndicator.style.height = (rect.height || 20) + 'px';
+  }
+
+  _hideDropIndicator() {
+    if (this._dropIndicator) this._dropIndicator.style.display = 'none';
+  }
+
+  /**
+   * Moves el to dropRange via execCommand('delete') + execCommand('insertHTML')
+   * rather than a plain DOM insertBefore, for the same reason _deleteSelectedMedia
+   * avoids el.remove(): only execCommand-driven edits land on the native undo
+   * stack. That does mean a move takes two Ctrl+Z presses to fully unwind
+   * (one per command) rather than one — an accepted trade-off, since the
+   * alternative (a raw DOM move) would not be undoable at all.
+   *
+   * The two execCommands' own 'input' events would each independently call
+   * _emitChange() with intermediate — and, for the insert half, momentarily
+   * tagged — HTML; _suppressAutoEmit holds that back so hosts only ever see
+   * the clean start and end states, as exactly one 'change'.
+   */
+  _commitMove(el, dropRange, before) {
+    if (!dropRange || !dropRange.startContainer.isConnected) return;
+
+    const marker = 'jmv' + (++this._bmSeq);
+    const clone = el.cloneNode(true);
+    clone.querySelectorAll('.jotter-media-shield').forEach(s => s.remove());
+    clone.setAttribute('data-jotter-move', marker);
+
+    this._suppressAutoEmit = true;
+    const sel = window.getSelection();
+
+    const delRange = document.createRange();
+    delRange.selectNode(el);
+    sel.removeAllRanges();
+    sel.addRange(delRange);
+    document.execCommand('delete', false, null);
+
+    sel.removeAllRanges();
+    sel.addRange(dropRange);
+    document.execCommand('insertHTML', false, clone.outerHTML);
+
+    const inserted = this._editor.querySelector(`[data-jotter-move="${marker}"]`);
+    if (inserted) inserted.removeAttribute('data-jotter-move');
+    this._suppressAutoEmit = false;
+
+    this._updateStatus();
+    if (inserted) this._selectMedia(inserted); else this._deselectMedia();
+    if (this._richHTML() !== before) this._emitChange();
+  }
+
+  /**
+   * Writes a media element to the clipboard with its click-shield stripped —
+   * the shield is edit-time-only bookkeeping (see _ensureMediaShields) and
+   * must never leak into copied/cut content any more than it leaks into
+   * getHTML(). Used by both the 'copy'/'cut' listeners below and (via
+   * execCommand('copy'/'cut')) the toolbar's Copy/Cut buttons.
+   */
+  _writeMediaToClipboard(e, el) {
+    const clone = el.cloneNode(true);
+    clone.querySelectorAll('.jotter-media-shield').forEach(s => s.remove());
+    e.clipboardData.setData('text/html', clone.outerHTML);
+    e.clipboardData.setData('text/plain', el.tagName === 'IMG' ? (el.alt || '') : (el.textContent || ''));
+  }
+
   // ─── Events ───────────────────────────────────────────────────────────────
 
   _bindEvents() {
@@ -1486,7 +1657,7 @@ class JotterJS {
       this._ensureMediaShields();
       if (this._selectedMedia) this._positionMediaFrame();
       this._updateStatus();
-      this._emitChange();
+      if (!this._suppressAutoEmit) this._emitChange();
     });
 
     this._editor.addEventListener('keyup',   () => this._updateToolbarState());
@@ -1495,9 +1666,49 @@ class JotterJS {
     // Selecting an image/video/embed block: preventDefault keeps the browser
     // from placing a caret or starting a native image drag, and the click
     // stays out of any interactive content behind a video/embed's shield.
+    // Arming a potential move here too means the very first click-and-drag on
+    // a not-yet-selected element both selects and repositions it in one
+    // gesture; once selected, further drags start from the frame instead
+    // (see _buildMediaFrame) since the frame then sits on top of the element.
     this._editor.addEventListener('mousedown', e => {
       const media = this._mediaElementFromTarget(e.target);
-      if (media) { e.preventDefault(); this._selectMedia(media); }
+      if (!media) return;
+      e.preventDefault();
+      this._selectMedia(media);
+      this._beginPotentialMove(media, e);
+    });
+
+    // A selected media element is a real (non-collapsed) DOM selection, so
+    // the browser's default copy/cut would otherwise serialize it verbatim —
+    // shield included. Take over to strip that, and (for cut) go through the
+    // same execCommand('delete') path _deleteSelectedMedia uses, so undo
+    // still works.
+    this._editor.addEventListener('copy', e => {
+      if (!this._selectedMedia) return;
+      e.preventDefault();
+      this._writeMediaToClipboard(e, this._selectedMedia);
+    });
+    this._editor.addEventListener('cut', e => {
+      if (!this._selectedMedia) return;
+      e.preventDefault();
+      this._writeMediaToClipboard(e, this._selectedMedia);
+      this._deleteSelectedMedia();
+    });
+
+    // Native paste bypassed _sanitize() entirely before this listener existed
+    // (the browser inserted clipboard HTML straight into the DOM); now it's
+    // sanitized and routed through execCommand('insertHTML') like every other
+    // insertion, so pasted video/embed wraps pick up a shield on the same
+    // 'input' pass as any other edit.
+    this._editor.addEventListener('paste', e => {
+      e.preventDefault();
+      const html = (e.clipboardData || window.clipboardData).getData('text/html');
+      if (html) {
+        this._applyEdit(() => document.execCommand('insertHTML', false, this._sanitize(html)));
+      } else {
+        const text = (e.clipboardData || window.clipboardData).getData('text/plain');
+        if (text) this._applyEdit(() => document.execCommand('insertText', false, text));
+      }
     });
 
     this._onWindowResize = () => { if (this._selectedMedia) this._positionMediaFrame(); };
@@ -1569,6 +1780,12 @@ class JotterJS {
     this._onDocKeyDown = e => {
       if (e.key !== 'Escape') return;
       if (this._resizeState) { this._abortResize(); return; }
+      // Only an actual in-progress drag (past the move threshold) should be
+      // aborted in place, keeping the element selected — same as resize. A
+      // merely-armed, not-yet-dragging moveState (the window between a plain
+      // select click and its mouseup) isn't a drag yet, so Escape here should
+      // fall through to deselecting the media entirely, same as any other click.
+      if (this._moveState && this._moveState.dragging) { this._abortMove(); return; }
       if (this._selectedMedia) { this._deselectMedia(); return; }
       if (this._popupVisible()) {
         this._restoreSavedBookmark();
@@ -1791,6 +2008,10 @@ class JotterJS {
   _richHTML() {
     const clone = this._editor.cloneNode(true);
     clone.querySelectorAll('[data-jotter-bookmark], .jotter-media-shield').forEach(el => el.remove());
+    // data-jotter-move is a same-tick marker (see _commitMove) already gone
+    // by the time any real read happens; stripped here too only so a stray
+    // leftover from undo/redo landing mid-marker can never surface.
+    clone.querySelectorAll('[data-jotter-move]').forEach(el => el.removeAttribute('data-jotter-move'));
     return clone.innerHTML;
   }
 
