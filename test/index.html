@@ -216,7 +216,7 @@
   </div>
 
   <!-- Stand-in for a host asset library: focus-trapping, slow, and re-entrant -->
-  <div id="picker" hidden style="position:fixed; inset:0; background:rgba(30,28,24,.4); display:grid; place-items:center; z-index:99">
+  <div id="picker" style="position:fixed; inset:0; background:rgba(30,28,24,.4); display:none; place-items:center; z-index:99">
     <div style="background:#fff; border:1px solid #d8d4cc; border-radius:6px; padding:20px; width:320px; display:flex; flex-direction:column; gap:10px">
       <strong style="font-size:12px">Asset library</strong>
       <input id="picker-input" placeholder="https://…/photo.jpg" style="padding:8px; border:1px solid #d8d4cc; border-radius:4px; font:inherit" />
@@ -282,12 +282,12 @@
 
     /** Opens the modal, steals focus, and resolves with a src (or null on cancel). */
     function pickAsset() {
-      picker.hidden = false;
+      picker.style.display = 'grid';
       pickerInput.value = '';
       pickerInput.focus();               // focus trap — the editor blurs right here
       return new Promise(resolve => {
         const done = (value) => {
-          picker.hidden = true;
+          picker.style.display = 'none';
           document.getElementById('picker-ok').onclick = null;
           document.getElementById('picker-cancel').onclick = null;
           resolve(value);

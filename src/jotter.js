@@ -271,6 +271,10 @@ class JotterJS {
     this._destroyed        = false;
     this._lastForeColor    = '#e8e4d8';
     this._lastHiliteColor  = '#c8a96e';
+    this._selectedMedia    = null;       // currently selected img/video-wrap/embed-wrap
+    this._resizeState      = null;       // in-flight handle drag, see _beginResize
+    this._onResizeMove     = this._onResizeMove.bind(this);
+    this._onResizeEnd      = this._onResizeEnd.bind(this);
     this._init();
   }
 
@@ -300,6 +304,11 @@ class JotterJS {
     this._editor.innerHTML = this._sanitize(initialHTML);
     this._editor.spellcheck = true;
     document.execCommand('defaultParagraphSeparator', false, 'p');
+    // Firefox's native resize/inline-table-editing UI would otherwise compete
+    // visually with the custom media-selection handles built below.
+    try { document.execCommand('enableObjectResizing', false, false); } catch (_) {}
+    try { document.execCommand('enableInlineTableEditing', false, false); } catch (_) {}
+    this._ensureMediaShields();
 
     this._source = document.createElement('textarea');
     this._source.className = 'jotter-source';
@@ -309,9 +318,11 @@ class JotterJS {
     this._sourceMode = false;
 
     this._statusBar = this._buildStatusBar();
+    this._mediaFrame = this._buildMediaFrame();
 
     this._editorWrap.appendChild(this._editor);
     this._editorWrap.appendChild(this._source);
+    this._editorWrap.appendChild(this._mediaFrame);
     this._root.appendChild(this._toolbar);
     this._root.appendChild(this._editorWrap);
     this._root.appendChild(this._statusBar);
@@ -1103,9 +1114,14 @@ class JotterJS {
     return `<div class="jotter-video-wrap"><iframe src="https://www.youtube.com/embed/${id}" frameborder="0" allowfullscreen loading="lazy" title="YouTube video"></iframe></div><p><br></p>`;
   }
 
-  /** Embeds are inserted verbatim — the host, not the end user, supplies them. */
+  /**
+   * The embed markup itself is inserted verbatim (the host, not the end user,
+   * supplies it, so it is never sanitized) inside a .jotter-embed-wrap, added
+   * purely so the block is selectable and can carry a click shield — same
+   * treatment as the video wrap.
+   */
   _embedHTML(html) {
-    return html + '<p><br></p>';
+    return `<div class="jotter-embed-wrap">${html}</div><p><br></p>`;
   }
 
   // ─── Resolver hooks ───────────────────────────────────────────────────────
@@ -1257,6 +1273,182 @@ class JotterJS {
     return bar;
   }
 
+  // ─── Media selection ──────────────────────────────────────────────────────
+  // Images, YouTube embeds and generic embeds are atomic blocks: clicking one
+  // shows a floating frame (positioned over it, not part of the saved HTML)
+  // with resize handles, and Backspace/Delete removes the whole element.
+  //
+  // The frame lives in _editorWrap, a sibling of _editor/_source, rather than
+  // inside the editable content or on document.body like the popup — being a
+  // normal descendant of the scrolling wrap means it scrolls with the content
+  // for free, with no scroll listener needed.
+  //
+  // Video/embed content sits behind a permanent "shield" div so it can never
+  // be interacted with while editing (no accidental playback, no swallowed
+  // clicks) — every click on the block always just selects it. The shield is
+  // injected live-DOM only and stripped out of getHTML()/_sanitize(), exactly
+  // like the selection bookmarks above are, so published HTML keeps a normal,
+  // interactive iframe.
+
+  /** Builds the reusable floating selection frame with its 6 resize handles. */
+  _buildMediaFrame() {
+    const frame = document.createElement('div');
+    frame.className = 'jotter-media-frame';
+    ['nw', 'ne', 'sw', 'se', 'w', 'e'].forEach(pos => {
+      const h = document.createElement('div');
+      h.className = 'jotter-resize-handle jotter-resize-handle--' + pos;
+      h.dataset.handle = pos;
+      h.tabIndex = -1;
+      frame.appendChild(h);
+    });
+    frame.addEventListener('mousedown', e => {
+      const handle = e.target.closest('.jotter-resize-handle');
+      if (!handle || !this._selectedMedia) return;
+      e.preventDefault();
+      this._beginResize(handle.dataset.handle, e);
+    });
+    return frame;
+  }
+
+  /** Adds a click shield to every video/embed block that doesn't already have one. */
+  _ensureMediaShields() {
+    this._editor.querySelectorAll('.jotter-video-wrap, .jotter-embed-wrap').forEach(wrap => {
+      if (wrap.querySelector(':scope > .jotter-media-shield')) return;
+      const shield = document.createElement('div');
+      shield.className = 'jotter-media-shield';
+      wrap.appendChild(shield);
+    });
+  }
+
+  /** Nearest selectable media element (img / video-wrap / embed-wrap) under target, or null. */
+  _mediaElementFromTarget(target) {
+    if (!this._editor.contains(target)) return null;
+    const img = target.closest('img');
+    if (img && this._editor.contains(img)) return img;
+    const wrap = target.closest('.jotter-video-wrap, .jotter-embed-wrap');
+    if (wrap && this._editor.contains(wrap)) return wrap;
+    return null;
+  }
+
+  /** Selects a media element: shows the frame over it and parks a real caret before it. */
+  _selectMedia(el) {
+    if (this._selectedMedia === el) return;
+    this._deselectMedia();
+    this._selectedMedia = el;
+    this._positionMediaFrame();
+    this._mediaFrame.classList.add('jotter-media-frame--visible');
+
+    this._editor.focus({ preventScroll: true });
+    const range = document.createRange();
+    range.setStartBefore(el);
+    range.collapse(true);
+    const sel = window.getSelection();
+    sel.removeAllRanges();
+    sel.addRange(range);
+
+    this._updateToolbarState();
+  }
+
+  /** Clears the current media selection (and aborts any in-flight resize). */
+  _deselectMedia() {
+    if (this._resizeState) this._abortResize();
+    if (!this._selectedMedia) return;
+    this._selectedMedia = null;
+    this._mediaFrame.classList.remove('jotter-media-frame--visible');
+  }
+
+  /** Repositions the floating frame to match the selected element's current box. */
+  _positionMediaFrame() {
+    const el = this._selectedMedia;
+    if (!el) return;
+    const wrapRect = this._editorWrap.getBoundingClientRect();
+    const elRect   = el.getBoundingClientRect();
+    this._mediaFrame.style.top    = (elRect.top  - wrapRect.top  + this._editorWrap.scrollTop)  + 'px';
+    this._mediaFrame.style.left   = (elRect.left - wrapRect.left + this._editorWrap.scrollLeft) + 'px';
+    this._mediaFrame.style.width  = elRect.width  + 'px';
+    this._mediaFrame.style.height = elRect.height + 'px';
+  }
+
+  /**
+   * Removes the selected element via execCommand('delete') rather than a plain
+   * el.remove() — the browser's native undo stack (what Ctrl+Z / the Undo
+   * button run via execCommand('undo')) only tracks edits made through
+   * execCommand, so a raw DOM removal would be invisible to it. Selecting the
+   * whole node first (rather than a collapsed caret before it) means 'delete'
+   * removes exactly that node regardless of direction, and the browser
+   * collapses the caret to where it used to be on its own.
+   */
+  _deleteSelectedMedia() {
+    const el = this._selectedMedia;
+    if (!el) return;
+    this._deselectMedia();
+    const range = document.createRange();
+    range.selectNode(el);
+    const sel = window.getSelection();
+    sel.removeAllRanges();
+    sel.addRange(range);
+    this._applyEdit(() => document.execCommand('delete', false, null));
+    this._updateToolbarState();
+  }
+
+  /**
+   * Starts a width-only resize drag. Height is never set directly: an image's
+   * natural aspect ratio, the video wrap's padding-bottom-percent-of-width box,
+   * and an embed's normal reflow all keep it correct on their own once width
+   * changes, so one code path covers all three media types.
+   */
+  _beginResize(handleType, e) {
+    const el   = this._selectedMedia;
+    const rect = el.getBoundingClientRect();
+    const sign = handleType.includes('w') ? -1 : 1;
+    this._resizeState = {
+      el, sign,
+      startX:           e.clientX,
+      startWidth:       rect.width,
+      startInlineWidth: el.style.width,
+      before:           this._richHTML(),
+    };
+    document.addEventListener('mousemove', this._onResizeMove);
+    document.addEventListener('mouseup', this._onResizeEnd, { once: true });
+  }
+
+  _onResizeMove(e) {
+    const s = this._resizeState;
+    if (!s) return;
+    const dx    = (e.clientX - s.startX) * s.sign;
+    const min   = 40;
+    const max   = Math.max(min, this._editor.clientWidth);
+    const width = Math.max(min, Math.min(max, Math.round(s.startWidth + dx)));
+    s.el.style.width = width + 'px';
+    s.el.style.removeProperty('max-width');
+    this._positionMediaFrame();
+  }
+
+  /**
+   * A drag spans async mousemove/mouseup events, so it can't go through the
+   * synchronous _applyEdit() helper — this manually replicates its contract
+   * instead: emit 'change' exactly once, only if the width actually changed.
+   */
+  _onResizeEnd() {
+    document.removeEventListener('mousemove', this._onResizeMove);
+    const s = this._resizeState;
+    this._resizeState = null;
+    if (!s) return;
+    this._updateStatus();
+    if (this._richHTML() !== s.before) this._emitChange();
+  }
+
+  /** Escape mid-drag: revert to the pre-drag width and emit nothing. */
+  _abortResize() {
+    const s = this._resizeState;
+    if (!s) return;
+    document.removeEventListener('mousemove', this._onResizeMove);
+    document.removeEventListener('mouseup', this._onResizeEnd);
+    s.el.style.width = s.startInlineWidth;
+    this._resizeState = null;
+    this._positionMediaFrame();
+  }
+
   // ─── Events ───────────────────────────────────────────────────────────────
 
   _bindEvents() {
@@ -1291,12 +1483,25 @@ class JotterJS {
           }
         }
       });
+      this._ensureMediaShields();
+      if (this._selectedMedia) this._positionMediaFrame();
       this._updateStatus();
       this._emitChange();
     });
 
     this._editor.addEventListener('keyup',   () => this._updateToolbarState());
     this._editor.addEventListener('mouseup', () => this._updateToolbarState());
+
+    // Selecting an image/video/embed block: preventDefault keeps the browser
+    // from placing a caret or starting a native image drag, and the click
+    // stays out of any interactive content behind a video/embed's shield.
+    this._editor.addEventListener('mousedown', e => {
+      const media = this._mediaElementFromTarget(e.target);
+      if (media) { e.preventDefault(); this._selectMedia(media); }
+    });
+
+    this._onWindowResize = () => { if (this._selectedMedia) this._positionMediaFrame(); };
+    window.addEventListener('resize', this._onWindowResize);
 
     // focusin/focusout rather than focus/blur: they carry relatedTarget, which is
     // what tells "the user left the editor" apart from "the user moved into the
@@ -1312,6 +1517,7 @@ class JotterJS {
     });
 
     this._editor.addEventListener('focusout', e => {
+      this._deselectMedia();
       if (this._externalDepth > 0) return;          // host UI has the floor
       if (this._isInternalTarget(e.relatedTarget)) return;
       // relatedTarget is null whenever focus lands on something unfocusable —
@@ -1328,6 +1534,11 @@ class JotterJS {
     });
 
     this._editor.addEventListener('keydown', e => {
+      if ((e.key === 'Backspace' || e.key === 'Delete') && this._selectedMedia) {
+        e.preventDefault();
+        this._deleteSelectedMedia();
+        return;
+      }
       if (e.key === 'Tab') {
         e.preventDefault();
         document.execCommand('insertHTML', false, '&nbsp;&nbsp;&nbsp;&nbsp;');
@@ -1335,19 +1546,31 @@ class JotterJS {
     });
 
     // Close popup on outside click — the caret bookmark goes with it, since the
-    // click has already moved the caret somewhere the user chose.
+    // click has already moved the caret somewhere the user chose. A click
+    // outside the selected media block (and outside the frame/handles used to
+    // resize it) deselects it the same way.
     this._onDocMouseDown = e => {
       if (this._popupVisible() &&
           !this._popup.contains(e.target) &&
           !this._toolbarEl.contains(e.target)) {
         this._hidePopup();
       }
+      if (this._selectedMedia &&
+          !this._mediaFrame.contains(e.target) &&
+          e.target !== this._selectedMedia &&
+          !this._selectedMedia.contains(e.target)) {
+        this._deselectMedia();
+      }
     };
     document.addEventListener('mousedown', this._onDocMouseDown);
 
-    // Close popup on Escape, putting the caret back where it was
+    // Escape: abort a resize in progress, else deselect media, else close the
+    // popup and put the caret back where it was.
     this._onDocKeyDown = e => {
-      if (e.key === 'Escape' && this._popupVisible()) {
+      if (e.key !== 'Escape') return;
+      if (this._resizeState) { this._abortResize(); return; }
+      if (this._selectedMedia) { this._deselectMedia(); return; }
+      if (this._popupVisible()) {
         this._restoreSavedBookmark();
         this._hidePopup();
       }
@@ -1368,6 +1591,7 @@ class JotterJS {
    * Leaving source mode: sanitizes textarea value back into innerHTML.
    */
   _toggleSourceMode() {
+    this._deselectMedia();
     this._sourceMode = !this._sourceMode;
 
     if (this._sourceMode) {
@@ -1378,6 +1602,7 @@ class JotterJS {
       this._source.style.display = 'block';
     } else {
       this._editor.innerHTML = this._sanitize(this._source.value);
+      this._ensureMediaShields();
       this._source.style.display = 'none';
       this._editor.style.display = '';
       this._updateStatus();
@@ -1430,8 +1655,9 @@ class JotterJS {
   _sanitize(html) {
     const doc = new DOMParser().parseFromString(html, 'text/html');
     doc.querySelectorAll('script').forEach(el => el.remove());
-    // Selection markers are internal bookkeeping; never let them back in.
-    doc.querySelectorAll('[data-jotter-bookmark]').forEach(el => el.remove());
+    // Selection markers and media click-shields are internal bookkeeping;
+    // never let them back in.
+    doc.querySelectorAll('[data-jotter-bookmark], .jotter-media-shield').forEach(el => el.remove());
     doc.querySelectorAll('*').forEach(el => {
       Array.from(el.attributes).forEach(attr => {
         if (attr.name.startsWith('on')) {
@@ -1557,11 +1783,14 @@ class JotterJS {
   // instead, so they still point at the right spot afterwards. They are stripped
   // from getHTML() and from _sanitize(), so hosts never see them.
 
-  /** Editable area's HTML, minus any live selection markers. */
+  /**
+   * Editable area's HTML, minus any live selection markers and media click-
+   * shields. Always clones (no bookmark-free fast path): shields can be
+   * present independently of bookmarks, so both must be stripped every time.
+   */
   _richHTML() {
-    if (this._bookmarks.size === 0) return this._editor.innerHTML;
     const clone = this._editor.cloneNode(true);
-    clone.querySelectorAll('[data-jotter-bookmark]').forEach(el => el.remove());
+    clone.querySelectorAll('[data-jotter-bookmark], .jotter-media-shield').forEach(el => el.remove());
     return clone.innerHTML;
   }
 
@@ -1666,7 +1895,7 @@ class JotterJS {
   getText()      { return this._editor.innerText; }
   isSourceMode() { return this._sourceMode; }
   toggleSource() { this._toggleSourceMode(); return this; }
-  clear()    { this._dropBookmarks(); this._editor.innerHTML = ''; this._updateStatus(); return this; }
+  clear()    { this._deselectMedia(); this._dropBookmarks(); this._editor.innerHTML = ''; this._updateStatus(); return this; }
   focus()    { this._editor.focus(); return this; }
 
   /**
@@ -1792,8 +2021,10 @@ class JotterJS {
   }
 
   setHTML(html) {
+    this._deselectMedia();
     this._dropBookmarks();
     this._editor.innerHTML = this._sanitize(html);
+    this._ensureMediaShields();
     this._updateStatus();
     return this;
   }
@@ -1829,12 +2060,14 @@ class JotterJS {
   destroy() {
     const html = this.getHTML();
     this._destroyed = true;
+    this._deselectMedia();
     this._hidePopup();
     this._dropBookmarks();
     this._externalBookmark = null;
     this._externalDepth = 0;
     document.removeEventListener('mousedown', this._onDocMouseDown);
     document.removeEventListener('keydown', this._onDocKeyDown);
+    window.removeEventListener('resize', this._onWindowResize);
     if (this._popup.parentNode) this._popup.parentNode.removeChild(this._popup);
     this._target.classList.remove('jotter-host');
     this._target.innerHTML = html;
