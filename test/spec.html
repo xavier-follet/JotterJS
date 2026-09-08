@@ -694,6 +694,102 @@
       eq(document.activeElement, editorEl(host), 'the mouse path left focus on the select');
     });
 
+    // ─── Media selection / resize / delete ──────────────────────────────────
+
+    await test('_embedHTML wraps content in .jotter-embed-wrap', async () => {
+      const { ed, host } = mount({ onRequestEmbed: async () => ({ html: '<hr id="x">' }) });
+      caretAt(host, 11);
+      mousedown(btn(host, 'Insert Embed'));
+      await tick(40);
+      assert(ed.getHTML().includes('class="jotter-embed-wrap"'), 'embed was not wrapped: ' + ed.getHTML());
+      assert(ed.getHTML().includes('<hr id="x">'), 'embed content was not inserted verbatim');
+    });
+
+    await test('video/embed wrappers get a click shield that is stripped from getHTML()', async () => {
+      const { ed, host } = mount({ onRequestEmbed: async () => ({ html: '<hr id="x">' }) });
+      caretAt(host, 11);
+      mousedown(btn(host, 'Insert Embed'));
+      await tick(40);
+      const wrap = editorEl(host).querySelector('.jotter-embed-wrap');
+      assert(wrap, 'embed wrap missing from the live DOM');
+      assert(wrap.querySelector('.jotter-media-shield'), 'shield missing from the live DOM');
+      assert(!ed.getHTML().includes('jotter-media-shield'), 'shield leaked into saved HTML');
+    });
+
+    await test('clicking media selects it and Delete removes it, emitting change once', async () => {
+      let changes = 0;
+      const { ed, host } = mount({ onChange: () => changes++ }, '<p>Hi</p><img src="p.png" alt="pic">');
+      const img = editorEl(host).querySelector('img');
+      mousedown(img);
+      assert(host.querySelector('.jotter-media-frame--visible'), 'frame did not appear on select');
+      keydown(editorEl(host), 'Delete');
+      assert(!editorEl(host).querySelector('img'), 'image was not removed');
+      assert(!host.querySelector('.jotter-media-frame--visible'), 'frame stayed visible after delete');
+      eq(changes, 1, 'expected exactly one change event');
+    });
+
+    await test('Backspace also removes the selected media', async () => {
+      const { ed, host } = mount({}, '<p>Hi</p><img src="p.png">');
+      const img = editorEl(host).querySelector('img');
+      mousedown(img);
+      keydown(editorEl(host), 'Backspace');
+      assert(!editorEl(host).querySelector('img'), 'image was not removed by Backspace');
+    });
+
+    await test('deleting selected media goes through the native undo stack', async () => {
+      const { host } = mount({}, '<p>Hi</p><img src="p.png">');
+      const img = editorEl(host).querySelector('img');
+      mousedown(img);
+      keydown(editorEl(host), 'Delete');
+      assert(!editorEl(host).querySelector('img'), 'image was not removed');
+      document.execCommand('undo');
+      assert(editorEl(host).querySelector('img'), 'undo did not restore the deleted media');
+    });
+
+    await test('Escape deselects media', async () => {
+      const { host } = mount({}, '<p>Hi</p><img src="p.png">');
+      const img = editorEl(host).querySelector('img');
+      mousedown(img);
+      assert(host.querySelector('.jotter-media-frame--visible'), 'frame did not appear on select');
+      document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+      assert(!host.querySelector('.jotter-media-frame--visible'), 'Escape did not deselect media');
+    });
+
+    await test('clicking outside the media block deselects it', async () => {
+      const { host } = mount({}, '<p>Hi</p><img src="p.png">');
+      const img = editorEl(host).querySelector('img');
+      mousedown(img);
+      assert(host.querySelector('.jotter-media-frame--visible'), 'frame did not appear on select');
+      mousedown(document.getElementById('outside'));
+      assert(!host.querySelector('.jotter-media-frame--visible'), 'clicking outside did not deselect media');
+    });
+
+    await test('dragging a resize handle changes width and emits change once', async () => {
+      let changes = 0;
+      const { ed, host } = mount({ onChange: () => changes++ }, '<p>Hi</p><img src="p.png">');
+      const img = editorEl(host).querySelector('img');
+      mousedown(img);
+      const handle = host.querySelector('.jotter-resize-handle--e');
+      handle.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true, clientX: 100 }));
+      document.dispatchEvent(new MouseEvent('mousemove', { bubbles: true, clientX: 150 }));
+      document.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, clientX: 150 }));
+      assert(img.style.width, 'width was not set by the drag');
+      eq(changes, 1, 'expected exactly one change event for the whole drag');
+    });
+
+    await test('Escape mid-resize reverts the width and emits nothing', async () => {
+      let changes = 0;
+      const { ed, host } = mount({ onChange: () => changes++ }, '<p>Hi</p><img src="p.png">');
+      const img = editorEl(host).querySelector('img');
+      mousedown(img);
+      const handle = host.querySelector('.jotter-resize-handle--e');
+      handle.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true, clientX: 100 }));
+      document.dispatchEvent(new MouseEvent('mousemove', { bubbles: true, clientX: 150 }));
+      document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+      eq(img.style.width, '', 'width was not reverted on Escape');
+      eq(changes, 0, 'change fired despite the abort');
+    });
+
     // ─── Summary ───────────────────────────────────────────────────────────
     const summary = document.getElementById('summary');
     summary.textContent = `${passed} passed, ${failed} failed`;
