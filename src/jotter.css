@@ -410,6 +410,12 @@
   height: 100%;
   border: none;
   z-index: 1;
+  /* Belt-and-suspenders: the shield's higher z-index is what's supposed to
+     keep clicks off this in the first place, but that only holds if nothing
+     ever disturbs the stacking order. Pointer-events:none makes the iframe
+     unclickable outright, so a real click can never reach — and start
+     playing — the video regardless of any stacking edge case. */
+  pointer-events: none;
 }
 
 /* Generic embed block (Insert Embed popup / onRequestEmbed) */
@@ -418,6 +424,13 @@
   display: block;
   width: 100%;
   margin: 0.75em 0;
+}
+/* Same belt-and-suspenders treatment for arbitrary embed content — whatever
+   the host/user pastes in (an iframe, a button, a link) must never be
+   directly clickable; only the shield on top of it should ever receive
+   input while editing. */
+.jotter-editor .jotter-embed-wrap > :not(.jotter-media-shield) {
+  pointer-events: none;
 }
 
 /* ─── Media selection ───────────────────────────────────────────────────────
@@ -431,10 +444,15 @@
   box-sizing: border-box;
   border: 2px solid var(--jotter-accent);
   border-radius: 2px;
-  pointer-events: none;
+  /* auto (not none): once selected, the frame itself is the drag-to-move
+     surface — it sits above the element/shield (z-index) and catches
+     mousedown for a body drag, while handles still resize as before. */
+  pointer-events: auto;
+  cursor: move;
   z-index: 5;
 }
 .jotter-media-frame--visible { display: block; }
+.jotter-media-frame--dragging { border-style: dashed; opacity: 0.7; }
 
 .jotter-resize-handle {
   position: absolute;
@@ -465,6 +483,21 @@
   z-index: 2;
   background: transparent;
   cursor: pointer;
+}
+
+/* Drag-to-reposition insertion caret — shown at the exact candidate drop
+   point while dragging a selected media element (see _showDropIndicator).
+   top/left/height are set inline per drop point; width is fixed here since
+   it never changes. No `right` — this must size by width alone, not stretch
+   between two edges. */
+.jotter-drop-indicator {
+  position: absolute;
+  display: none;
+  width: 2px;
+  background: var(--jotter-accent);
+  border-radius: 1px;
+  pointer-events: none;
+  z-index: 6;
 }
 
 /* ─── Status Bar ────────────────────────────────────────────────────────────── */

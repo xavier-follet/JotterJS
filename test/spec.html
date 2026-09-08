@@ -790,6 +790,117 @@
       eq(changes, 0, 'change fired despite the abort');
     });
 
+    // ─── Copy / cut / paste ──────────────────────────────────────────────────
+
+    await test('copying selected media strips the shield from the clipboard', async () => {
+      const { host } = mount({ onRequestEmbed: async () => ({ html: '<hr id="x">' }) });
+      caretAt(host, 11);
+      mousedown(btn(host, 'Insert Embed'));
+      await tick(40);
+      const wrap = editorEl(host).querySelector('.jotter-embed-wrap');
+      mousedown(wrap.querySelector('.jotter-media-shield'));
+      const dt = new DataTransfer();
+      editorEl(host).dispatchEvent(new ClipboardEvent('copy', { bubbles: true, cancelable: true, clipboardData: dt }));
+      assert(dt.getData('text/html').includes('jotter-embed-wrap'), 'copied HTML missing the wrap');
+      assert(!dt.getData('text/html').includes('jotter-media-shield'), 'shield leaked into the clipboard');
+      document.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
+    });
+
+    await test('cutting selected media removes it and puts it on the clipboard, undoably', async () => {
+      const { ed, host } = mount({}, '<p>Hi</p><img src="p.png" alt="pic">');
+      const img = editorEl(host).querySelector('img');
+      mousedown(img);
+      const dt = new DataTransfer();
+      editorEl(host).dispatchEvent(new ClipboardEvent('cut', { bubbles: true, cancelable: true, clipboardData: dt }));
+      assert(dt.getData('text/html').includes('<img'), 'cut HTML missing the image');
+      assert(!editorEl(host).querySelector('img'), 'image was not removed by cut');
+      document.execCommand('undo');
+      assert(editorEl(host).querySelector('img'), 'undo did not restore the cut media');
+      document.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
+    });
+
+    await test('paste sanitizes HTML and inserts it', async () => {
+      const { ed, host } = mount();
+      caretAt(host, 5);
+      const dt = new DataTransfer();
+      dt.setData('text/html', '<b>bold</b><scr' + 'ipt>window.__hacked = true</scr' + 'ipt>');
+      editorEl(host).dispatchEvent(new ClipboardEvent('paste', { bubbles: true, cancelable: true, clipboardData: dt }));
+      assert(ed.getHTML().includes('<b>bold</b>'), 'pasted HTML content missing');
+      assert(!/<script/i.test(ed.getHTML()), 'unsanitized script survived paste');
+    });
+
+    await test('pasting a video wrap re-shields it', async () => {
+      const { ed, host } = mount();
+      caretAt(host, 5);
+      const dt = new DataTransfer();
+      dt.setData('text/html', '<div class="jotter-video-wrap"><iframe src="https://www.youtube.com/embed/dQw4w9WgXcQ"></iframe></div>');
+      editorEl(host).dispatchEvent(new ClipboardEvent('paste', { bubbles: true, cancelable: true, clipboardData: dt }));
+      const wrap = editorEl(host).querySelector('.jotter-video-wrap');
+      assert(wrap, 'video wrap missing after paste');
+      assert(wrap.querySelector('.jotter-media-shield'), 'pasted video wrap was not shielded');
+      assert(!ed.getHTML().includes('jotter-media-shield'), 'shield leaked into saved HTML');
+    });
+
+    await test('paste with only plain text falls back to insertText', async () => {
+      const { ed, host } = mount();
+      caretAt(host, 5);
+      const dt = new DataTransfer();
+      dt.setData('text/plain', 'PASTED');
+      editorEl(host).dispatchEvent(new ClipboardEvent('paste', { bubbles: true, cancelable: true, clipboardData: dt }));
+      eqHTML(ed.getHTML(), '<p>HelloPASTED world</p>', 'plain text paste landed off-target');
+    });
+
+    // ─── Drag-to-move ────────────────────────────────────────────────────────
+
+    await test('clicking already-selected media without dragging does not move it', async () => {
+      const { ed, host } = mount({}, '<p>Hi</p><img src="p.png">');
+      const img = editorEl(host).querySelector('img');
+      mousedown(img);
+      const frame = host.querySelector('.jotter-media-frame');
+      frame.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true, clientX: 5, clientY: 5 }));
+      document.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, clientX: 5, clientY: 5 }));
+      eqHTML(ed.getHTML(), '<p>Hi</p><img src="p.png">', 'content changed despite no drag');
+    });
+
+    await test('dragging past the threshold marks the frame as dragging, Escape aborts it cleanly', async () => {
+      const { ed, host } = mount({}, '<p>Hi</p><img src="p.png">');
+      const img = editorEl(host).querySelector('img');
+      mousedown(img);
+      const frame = host.querySelector('.jotter-media-frame');
+      frame.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true, clientX: 10, clientY: 10 }));
+      document.dispatchEvent(new MouseEvent('mousemove', { bubbles: true, clientX: 100, clientY: 10 }));
+      assert(frame.classList.contains('jotter-media-frame--dragging'), 'frame did not enter dragging state');
+      document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+      assert(!frame.classList.contains('jotter-media-frame--dragging'), 'Escape did not clear the dragging state');
+      eqHTML(ed.getHTML(), '<p>Hi</p><img src="p.png">', 'content changed despite the abort');
+      document.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
+    });
+
+    await test('dragging a selected image onto another paragraph moves it there, emitting change once', async () => {
+      let changes = 0;
+      const { ed, host } = mount({ onChange: () => changes++ }, '<p>First</p><img src="p.png"><p>Second paragraph text</p>');
+      // caretRangeFromPoint hit-tests real viewport coordinates and returns
+      // null off-screen, so this one test needs to be genuinely on-screen
+      // rather than sandboxed at -9999px like everything else here.
+      // position:fixed escapes the sandbox's offset regardless of ancestry.
+      Object.assign(host.style, { position: 'fixed', top: '0px', left: '0px', zIndex: '99999' });
+      const img = editorEl(host).querySelector('img');
+      const imgRect = img.getBoundingClientRect();
+      img.dispatchEvent(new MouseEvent('mousedown', {
+        bubbles: true, cancelable: true, clientX: imgRect.left + 5, clientY: imgRect.top + 5,
+      }));
+      const target = editorEl(host).querySelectorAll('p')[1];
+      const targetRect = target.getBoundingClientRect();
+      const dropX = targetRect.left + targetRect.width - 5, dropY = targetRect.top + targetRect.height / 2;
+      document.dispatchEvent(new MouseEvent('mousemove', { bubbles: true, clientX: dropX, clientY: dropY }));
+      document.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, clientX: dropX, clientY: dropY }));
+      const before = '<p>First</p><img src="p.png"><p>Second paragraph text</p>';
+      const after = ed.getHTML();
+      assert(after.includes('<img'), 'image was lost during the move');
+      assert(after !== before, 'content is unchanged — the move did not happen');
+      eq(changes, 1, 'expected exactly one change event for the whole move');
+    });
+
     // ─── Summary ───────────────────────────────────────────────────────────
     const summary = document.getElementById('summary');
     summary.textContent = `${passed} passed, ${failed} failed`;
