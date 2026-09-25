@@ -901,6 +901,20 @@
       eq(changes, 1, 'expected exactly one change event for the whole move');
     });
 
+    // ─── Empty content reads back as '' ──────────────────────────────────────
+
+    await test('browser filler markup reads back as an empty string', async () => {
+      for (const filler of ['<p><br></p>', '<br>', '<p>&nbsp;</p>', '<div><p> </p></div>']) {
+        const { ed } = mount({}, filler);
+        eq(ed.getHTML(), '', `filler survived: ${filler}`);
+      }
+    });
+
+    await test('textless media still counts as content', async () => {
+      const { ed } = mount({}, '<p><img src="p.png"></p>');
+      assert(ed.getHTML().includes('<img'), 'an image-only document was reported empty');
+    });
+
     // ─── Summary ───────────────────────────────────────────────────────────
     const summary = document.getElementById('summary');
     summary.textContent = `${passed} passed, ${failed} failed`;

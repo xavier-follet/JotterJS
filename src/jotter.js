@@ -169,6 +169,9 @@ Object.freeze(PRESETS);
 
 const TOOLBAR_ACTIONS = PRESETS.full;
 
+/** Elements that are content even with no text in them — see _richHTML(). */
+const VOID_CONTENT = 'img,video,iframe,audio,embed,object,svg,hr,table,input,canvas';
+
 /**
  * Popup id → constructor option that replaces it. Present here means a host can
  * hand the whole interaction to its own UI; every other popup is built-in only.
@@ -2012,6 +2015,12 @@ class JotterJS {
     // by the time any real read happens; stripped here too only so a stray
     // leftover from undo/redo landing mid-marker can never surface.
     clone.querySelectorAll('[data-jotter-move]').forEach(el => el.removeAttribute('data-jotter-move'));
+    // An emptied editable is never really empty: the browser leaves a filler
+    // <p><br></p>, a bare <br>, or an &nbsp;. Hosts storing that get markup
+    // where they asked for nothing, so anything without text or a void/media
+    // element in it reads back as ''.
+    if (!clone.textContent.replace(/[\s​]/g, '') &&
+        !clone.querySelector(VOID_CONTENT)) return '';
     return clone.innerHTML;
   }
 
