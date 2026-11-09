@@ -638,19 +638,39 @@ class JotterJS {
     // the dialog comes back with a value.
     let viaKeyboard = false;
 
+    // Chrome's picker stays open after a pick and closes on the next click, which
+    // also lands on the page. Swallow that one click in the editor so it can't
+    // move the selection the colour is meant for. Cancelling with Escape fires no
+    // change, so the guard then eats the next editor click instead.
+    let guard = null;
+    const dropGuard = () => {
+      if (guard) this._editor.removeEventListener('mousedown', guard, true);
+      guard = null;
+    };
+
     input.addEventListener('change', () => {
+      setTimeout(dropGuard); // after the dismissing mousedown, whichever order they come in
       const color = input.value;
       swatch.style.background = color;
       if (action.cmd === 'foreColor') this._lastForeColor = color;
       else this._lastHiliteColor = color;
       this._restoreSavedBookmark();
-      this._applyEdit(() => document.execCommand(action.cmd, false, color));
+      // styleWithCSS makes the browser emit <span style="color:…"> instead of
+      // <font color>. Reset afterwards so bold/italic keep emitting <b>/<i>.
+      this._applyEdit(() => {
+        document.execCommand('styleWithCSS', false, true);
+        document.execCommand(action.cmd, false, color);
+        document.execCommand('styleWithCSS', false, false);
+      });
       this._returnFocus(btn, viaKeyboard);
     });
 
     this._bindActivation(btn, fromKeyboard => {
       viaKeyboard = fromKeyboard;
       this._saveBookmark();
+      dropGuard();
+      guard = e => { e.preventDefault(); e.stopPropagation(); dropGuard(); };
+      this._editor.addEventListener('mousedown', guard, true);
       input.click();
     });
 
@@ -2059,8 +2079,13 @@ class JotterJS {
       range.setStartAfter(start);
       if (end) range.setEndBefore(end); else range.collapse(true);
     }
+    // Inserting the markers split text nodes. Re-join them (normalize keeps live
+    // ranges intact), or the leftover empty text nodes stop execCommand from
+    // seeing that the selection fills a styled span, so it nests a new one.
+    const parents = [start.parentNode, end && end.parentNode];
     if (start.parentNode) start.remove();
     if (end && end.parentNode) end.remove();
+    parents.forEach(p => p && p.normalize());
     return range;
   }
 
